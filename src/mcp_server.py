@@ -575,6 +575,59 @@ async def reject(approval_id: str) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
+@server.tool()
+async def dirigent_call(tool: str, arguments: dict | None = None) -> dict:
+    """УНИВЕРСАЛЬНЫЙ ДИСПЕТЧЕР — стабильная схема для новых возможностей.
+
+    ChatGPT кэширует список инструментов при подключении, поэтому новые
+    @server.tool появляются у него только после переподключения. Этот инструмент
+    решает проблему: все новые возможности сразу доступны через него после деплоя.
+    tool="help" — список вызываемых имен; аргументы — те же, что у одноимённого
+    инструмента (dict). Специфичные инструменты остаются для удобства и схем.
+    """
+    args = arguments or {}
+    reg = {
+        "help": _help,
+        "diagnose_step": diagnose_step,
+        "kill_step_process": kill_step_process,
+        "get_system_status": get_system_status,
+        "list_orders": list_orders,
+        "get_order": get_order,
+        "get_logs": get_logs,
+        "get_pending_approvals": get_pending_approvals,
+        "get_costs": get_costs,
+        "get_resource_status": get_resource_status,
+        "pause_order": pause_order,
+        "resume_order": resume_order,
+        "cancel_order": cancel_order,
+        "retry_step": retry_step,
+        "approve": approve,
+        "reject": reject,
+        "create_order": create_order,
+        "create_test_order": create_test_order,
+    }
+    fn = reg.get((tool or "").strip())
+    if fn is None:
+        _journal("dirigent_call", False)
+        return {"error": f"unknown tool: {tool}", "available": sorted(reg.keys())}
+    _journal(f"dirigent_call:{tool}", True)
+    return await fn(**args)
+
+
+async def _help() -> dict:
+    return {
+        "message": "Вызывай dirigent_call(tool=<имя>, arguments={...}). Имена = инструменты Dirigent.",
+        "tools": sorted([
+            "get_system_status", "list_orders", "get_order", "get_logs",
+            "get_pending_approvals", "get_costs", "get_resource_status",
+            "pause_order", "resume_order", "cancel_order", "retry_step",
+            "approve", "reject", "create_order", "create_test_order",
+            "diagnose_step", "kill_step_process",
+        ]),
+        "note": "новые возможности появляются в этом списке сразу после деплоя сервера",
+    }
+
+
 # ═══ MCP v2: CREATE (gated) ═════════════════════════════════
 
 @server.tool()

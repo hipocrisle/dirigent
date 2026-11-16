@@ -145,3 +145,12 @@ def test_unknown_client_resurrects(tmp_path):
     assert c2 is not None
     # permissive redirect
     assert c2.validate_redirect_uri("https://chatgpt.com/cb") is not None
+
+
+def test_dirigent_call_dispatch_and_help():
+    m = _load()
+    run = asyncio.run
+    help_res = run(m.dirigent_call("help"))
+    assert "diagnose_step" in help_res["tools"]
+    bad = run(m.dirigent_call("nosuch"))
+    assert "error" in bad and "available" in bad
