@@ -321,11 +321,11 @@ async def test_client_abort_then_reconnect_no_loss(db, live):
     resp, reader = await open_stream(live, {"last_event_id": str(ids[0])})
     await reader.read_n(1)
     resp.close()
-    await write_events(db, 2)
+    ids2 = await write_events(db, 2)
     resp, reader = await open_stream(live, {"last_event_id": str(ids[0])})
     try:
         got = await reader.read_n(4)
-        assert [e["id"] for e in got] == [ids[1], ids[2], ids[3], ids[4]]
+        assert [e["id"] for e in got] == [ids[1], ids[2], ids2[0], ids2[1]]
     finally:
         resp.close()
 
@@ -363,7 +363,7 @@ async def test_bad_input_400(live):
 
 async def test_client_close_does_not_leave_busy_loop(db, live_slow):
     resp, reader = await open_stream(live_slow)
-    await reader.read_more(want_events=1)
+    await reader.read_more(want_comments=1)   # connected-комментарий
     resp.close()
     await asyncio.sleep(0.1)
     # сервер не завис: остальные endpoint'ы отвечают, новые события пишутся

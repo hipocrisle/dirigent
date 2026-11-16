@@ -128,7 +128,10 @@ class EventStream:
         since, order_id, limit, err = parse_cursor(req)
         if err:
             return web.json_response({"error": err}, status=400)
-        if self.db.conn is None:
+        try:  # живость БД, а не merely объект соединения
+            cur = await self.db.conn.execute("SELECT 1")
+            await cur.fetchone()
+        except Exception:
             return web.json_response({"error": "db not ready"}, status=503)
 
         resp = web.StreamResponse(status=200, headers={
