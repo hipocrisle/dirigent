@@ -238,7 +238,9 @@ async def test_stream_start_headers_and_backlog(db, live):
 
 async def test_new_events_after_connect(db, live):
     oid = await submit(db, [{"id": "s1", "type": "mock.ok"}])
-    resp, reader = await open_stream(live, {"last_event_id": "999999"})
+    cur = await db.conn.execute("SELECT COALESCE(MAX(seq),0) m FROM events")
+    cursor = (await cur.fetchone())["m"]
+    resp, reader = await open_stream(live, {"last_event_id": str(cursor)})
     try:
         await reader.read_more(want_comments=1)
         assert reader.events == []          # старые не переотправляются
@@ -299,10 +301,10 @@ async def test_heartbeat_comment_when_idle(db, live):
 
 async def test_server_close_then_reconnect_without_loss(db, live_ttl):
     await write_events(db, 2)
-    resp, reader = await open_stream(live_ttl, {"last_event_id": "2"})
-    await reader.read_n(2)
+    resp, reader = await open_stream(live_ttl, {"last_event_id": "0"})
+    got_first = await reader.read_n(2)
     await reader.wait_closed()  # сервер штатно закрыл по TTL
-    cursor = reader.events[-1]["id"]
+    cursor = got_first[-1]["id"]
     await write_events(db, 2, oid="ord_after")
     resp, reader = await open_stream(live_ttl, {"last_event_id": str(cursor)})
     try:
