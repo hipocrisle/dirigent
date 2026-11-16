@@ -12,6 +12,7 @@ from aiohttp import web
 
 from . import actions
 from .db import DB
+from .event_stream import EventStream
 from .states import StepState
 
 DB_PATH = "/matrix/dirigent/dirigent.db"
@@ -160,9 +161,14 @@ class Api:
         return web.json_response(await actions.stats(self.db))
 
 
-def build_app(db: DB) -> web.Application:
+def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Application:
+    """event_stream=None — дефолтный SSE-поток; в тестах можно подставить лимиты."""
     api = Api(db)
+    sse = event_stream or EventStream(db)
     app = web.Application()
+    # P3: версионированный API. Snapshot — через уже существующие REST endpoints
+    # (/orders, /orders/{oid}, ...), SSE — только поток изменений из таблицы events.
+    app.router.add_get("/api/v1/events", sse)
     app.router.add_get("/orders", api.orders)
     app.router.add_get("/orders/{oid}", api.order_detail)
     app.router.add_get("/orders/{oid}/log", api.order_log)
