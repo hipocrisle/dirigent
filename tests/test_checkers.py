@@ -86,7 +86,11 @@ def test_run_acceptance_requires_changes(go_repo):
 
 
 def test_pytest_checker_on_fixture_repo(tmp_path):
+    import os
     (tmp_path / "pytest.ini").write_text("[pytest]\ntestpaths = .\n")
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    os.symlink("/matrix/dirigent/.venv/bin/python",
+               tmp_path / ".venv" / "bin" / "python")
     (tmp_path / "test_x.py").write_text("def test_ok():\n    assert True\n")
     r = check_pytest(str(tmp_path))
     assert r.ok, r.details[-300:]
