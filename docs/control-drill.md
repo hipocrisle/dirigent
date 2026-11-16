@@ -12,3 +12,12 @@ MCP возвращает фактическое состояние; ноль п�
 
 Возврат перед стартом: P1 done; CONTROL доступны; разрешение создавать mock-заказы;
 таблица переходов; go владельца.
+
+## Результаты Drill #1 (18.11)
+- PASS pause/resume (ord_c9912705a597: 18/18, без дублей)
+- PASS cancel (ord_c25a5f4c8557: каскад, повторный cancel ok:false — идемпотентность по state machine)
+- FAIL→FIXED retry (ord_6cb4bcd2fd16): attempts застревал на 2, ручной retry крутил запуски бесконечно.
+  Фикс: attempts = монотонный счётчик фактических запусков (атомарный инкремент в lease_step,
+  резервирование попытки = захват lease), retry_step без сброса, потолок 3 enforced,
+  4-й retry -> step.retry_refused; рестарт демона счётчик не сбрасывает; аудит lease==запуски.
+  Регрессионные тесты: tests/test_p1.py::test_retry_accounting_and_cap.

@@ -57,6 +57,10 @@ async def pause_order(db: DB, oid: str) -> bool:
     ok = await db.transition_order(oid, OrderState.paused)
     if ok:
         await db.event("order.paused", oid)
+        from . import notify
+        notify.enqueue("order.paused", notify.KIND_TITLES["order.paused"],
+                       f"Заказ: <code>{oid}</code>",
+                       dedup_key=f"order:{oid}:paused", order_id=oid)
     return ok
 
 
@@ -64,6 +68,10 @@ async def resume_order(db: DB, oid: str) -> bool:
     ok = await db.transition_order(oid, OrderState.active)
     if ok:
         await db.event("order.resumed", oid)
+        from . import notify
+        notify.enqueue("order.resumed", notify.KIND_TITLES["order.resumed"],
+                       f"Заказ: <code>{oid}</code>",
+                       dedup_key=f"order:{oid}:resumed", order_id=oid)
     return ok
 
 
@@ -86,6 +94,12 @@ async def retry_step(db: DB, oid: str, sid: str) -> bool:
     if row["attempts"] >= MAX_STEP_LAUNCHES:
         await db.event("step.retry_refused", oid, sid,
                        {"attempts": row["attempts"], "cap": MAX_STEP_LAUNCHES})
+        from . import notify
+        notify.enqueue("step.retry_refused",
+                       notify.KIND_TITLES["step.retry_refused"],
+                       f"Заказ: <code>{oid}</code>\nШаг: <code>{sid}</code>\n"
+                       f"Запусков: {row['attempts']}/{MAX_STEP_LAUNCHES}",
+                       dedup_key=f"step:{oid}/{sid}:refused", order_id=oid, step_id=sid)
         return False
     ok = await db.transition_step(
         oid, sid, StepState.retry_scheduled, force=True,

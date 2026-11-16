@@ -37,6 +37,8 @@ class Scheduler:
     # ── жизненный цикл ────────────────────────────────────────
     async def run_forever(self, tick: float = 1.0) -> None:
         await self.recover()
+        from .notify import sender_loop
+        tg = asyncio.create_task(sender_loop(stop=self._stopped))
         while not self._stopped.is_set():
             try:
                 await self.tick()
@@ -44,6 +46,7 @@ class Scheduler:
                 log.exception("tick failed")
             await asyncio.sleep(tick)
         await self.shutdown()
+        tg.cancel()
 
     async def stop(self) -> None:
         self._stopped.set()
@@ -196,6 +199,13 @@ class Scheduler:
             spec.approval.timeout_seconds)
         await self.db.event("approval.asked", oid, sid,
                             {"approval": aid, "default": spec.approval.default_action})
+        from . import notify
+        notify.enqueue("approval.requested",
+                       notify.KIND_TITLES["approval.requested"],
+                       f"Заказ: <code>{oid}</code>\nШаг: <code>{sid}</code>\n{question}\n"
+                       f"TTL: {int(spec.approval.timeout_seconds/60)} мин",
+                       dedup_key=f"approval:{aid}",
+                       order_id=oid, step_id=sid, approval_id=aid)
 
     async def _ask_and_wait(self, oid: str, sid: str, question: str, spec) -> bool:
         """approval.mode=before: шаг уже в running; при отказе — cancelled."""
@@ -289,9 +299,19 @@ class Scheduler:
             if prog["verdict"] == "all_done":
                 await self.db.transition_order(oid, OrderState.done)
                 await self.db.event("order.done", oid)
+                from . import notify
+                goal = (await (await self.db.conn.execute(
+                    "SELECT goal FROM orders WHERE id=?", (oid,))).fetchone())["goal"]
+                notify.enqueue("order.done", notify.KIND_TITLES["order.done"],
+                               f"Заказ: <code>{oid}</code>\n{goal[:200]}",
+                               dedup_key=f"order:{oid}:done", order_id=oid)
             elif prog["verdict"] in ("has_failed", "has_cancelled"):
                 await self.db.transition_order(oid, OrderState.error)
                 await self.db.event("order.error", oid, data=prog)
+                from . import notify
+                notify.enqueue("order.error", notify.KIND_TITLES["order.error"],
+                               f"Заказ: <code>{oid}</code>\n{prog}",
+                               dedup_key=f"order:{oid}:error", order_id=oid)
             else:
                 cur2 = await self.db.conn.execute(
                     "SELECT COUNT(*) n FROM approvals WHERE order_id=? AND status='open'",
