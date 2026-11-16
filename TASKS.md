@@ -66,3 +66,7 @@ WP-1 → всё. WP-2 ∥ WP-3. WP-4 после WP-1. WP-5 ∥ всё. WP-6 по
 
 ## Журнал
 - 16.11: пакеты созданы (Kimi), Фаза 0 в PLAN.md. Ждём «погнали» после круга 3 с ChatGPT.
+
+## Журнал
+- 17.11 late: P1 завершён — worktree-изоляция (src/workspace.py: worktree+ветка → auto-commit → merge в dirigent/integrate, конфликт сохраняет worktree; основная ветка не трогается), тест-B квоты Codex (tests/test_p1.py, мок: независимые шаги работают во waiting_quota, возобновление без повторов), systemd-юниты dirigent-api/dirigent-daemon/dirigent-mcp (EnvironmentFile=/matrix/secrets/dirigent-mcp.env, переезд со стека выполнен, туннель-URL сохранён). 88/88.
+- Pending: смоук codex-адаптера на живой квоте (квота сейчас у браузера — ждать окна хозяина), затем открыть /matrix/nexusbro в ALLOWED_REPOS. P2 Telegram-уведомления об апрувах. P3 веб-визуализатор (Codex берёт пакет по согласованию).
