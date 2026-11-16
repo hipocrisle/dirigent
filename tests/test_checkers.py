@@ -107,3 +107,19 @@ def test_files_exist_checker(tmp_path):
     (tmp_path / "a" / "x.html").write_text("<html></html>")
     (tmp_path / "a" / "app.js").write_text("console.log(1)")
     assert run_acceptance(spec, str(tmp_path), {}).ok
+
+
+def test_repo_changed_counts_agent_commits(go_repo):
+    subprocess.run(["git", "init", "-q", go_repo])
+    subprocess.run(["git", "-C", go_repo, "add", "-A"])
+    subprocess.run(["git", "-C", go_repo, "-c", "user.email=t@t",
+                    "-c", "user.name=t", "commit", "-qm", "base"])
+    subprocess.run(["git", "-C", go_repo, "branch", "dev"])  # базовая ветка как в реале
+    assert not check_repo_changed(go_repo).ok       # чисто, без коммитов — провал
+    # агент сам закоммитил правку (дерево чистое!) — всё равно засчитываем
+    (Path(go_repo) / "b.go").write_text("package t\n")
+    subprocess.run(["git", "-C", go_repo, "add", "-A"])
+    subprocess.run(["git", "-C", go_repo, "-c", "user.email=t@t",
+                    "-c", "user.name=t", "commit", "-qm", "agent work"])
+    r = check_repo_changed(go_repo)
+    assert r.ok, r.details
