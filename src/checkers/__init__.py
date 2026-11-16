@@ -96,7 +96,7 @@ def check_pytest(workdir: str) -> CheckResult:
     r = subprocess.run([py, "-m", "pytest", "-q"], cwd=workdir,
                        capture_output=True, text=True, timeout=1200)
     tail = "\n".join((r.stdout + r.stderr).splitlines()[-10:])
-    return CheckResult(p.returncode == 0, tail)
+    return CheckResult(r.returncode == 0, tail)
 
 
 def check_repo_changed(workdir: str) -> CheckResult:
