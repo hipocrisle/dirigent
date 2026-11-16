@@ -128,6 +128,11 @@ class DB:
         return True
 
     # ── steps ─────────────────────────────────────────────────
+    async def get_order_repo(self, oid: str) -> str | None:
+        cur = await self.conn.execute("SELECT repo FROM orders WHERE id=?", (oid,))
+        row = await cur.fetchone()
+        return row["repo"] if row else None
+
     async def get_step_spec(self, oid: str, sid: str) -> StepSpec:
         cur = await self.conn.execute(
             "SELECT spec_json FROM steps WHERE order_id=? AND id=?", (oid, sid))
@@ -236,10 +241,13 @@ class DB:
         return await self.transition_step(oid, sid, StepState.failed, **common)
 
     async def ready_steps(self, limit: int) -> list[aiosqlite.Row]:
+        # не запускаем шаги паузнутых заказов; waiting_human — ок (ветки без апрувов живут)
         cur = await self.conn.execute(
-            "SELECT order_id, id, type, executor FROM steps WHERE state='ready'"
-            " AND (backoff_until IS NULL OR backoff_until<=?) ORDER BY updated LIMIT ?",
-            (now(), limit))
+            "SELECT s.order_id, s.id, s.type, s.executor FROM steps s"
+            " JOIN orders o ON o.id = s.order_id"
+            " WHERE s.state='ready' AND o.state IN ('active','waiting_human')"
+            " AND (s.backoff_until IS NULL OR s.backoff_until<=?)"
+            " ORDER BY s.updated LIMIT ?", (now(), limit))
         return await cur.fetchall()
 
     async def stale_leases(self) -> list[aiosqlite.Row]:

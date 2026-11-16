@@ -24,6 +24,7 @@ class StepState(str, Enum):
 class OrderState(str, Enum):
     new = "new"
     active = "active"
+    paused = "paused"
     waiting_human = "waiting_human"
     done = "done"
     error = "error"
@@ -59,6 +60,8 @@ _ALLOWED: set[tuple[StepState, StepState]] = {
 _ORDER_ALLOWED: set[tuple[OrderState, OrderState]] = {
     (OrderState.new, OrderState.active),
     (OrderState.new, OrderState.cancelled),
+    (OrderState.active, OrderState.paused),
+    (OrderState.paused, OrderState.active),
     (OrderState.active, OrderState.waiting_human),
     (OrderState.active, OrderState.done),
     (OrderState.active, OrderState.error),

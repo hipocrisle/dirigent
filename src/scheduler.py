@@ -103,6 +103,7 @@ class Scheduler:
 
     async def _run_inner(self, oid: str, sid: str) -> None:
         spec = await self.db.get_step_spec(oid, sid)
+        repo = await self.db.get_order_repo(oid)
         tag = spec.type.split(".")[0]
         ex = self.exec.get(tag)
         if ex is None:
@@ -126,7 +127,7 @@ class Scheduler:
         hb = asyncio.create_task(self._heartbeat(oid, sid))
         try:
             result = await asyncio.wait_for(
-                ex.run(spec, workdir=None), timeout=spec.timeout_seconds)
+                ex.run(spec, workdir=repo), timeout=spec.timeout_seconds)
         except asyncio.TimeoutError:
             result = StepResult(ok=False, error_class="timeout",
                                 error_text=f"timeout {spec.timeout_seconds}s")
@@ -135,10 +136,11 @@ class Scheduler:
 
         if result.ok and spec.acceptance.get("checks"):
             from .checkers import run_acceptance
-            chk = run_acceptance(spec, None, result.artifacts)
+            chk = run_acceptance(spec, repo, result.artifacts)
             if not chk.ok:
                 result = StepResult(ok=False, error_class="runtime",
-                                    error_text=f"acceptance failed: {chk.details}")
+                                    error_text=f"acceptance failed: {chk.details}",
+                                    usage=result.usage)
         if result.ok and spec.approval.mode == "after":
             await self.db.transition_step(oid, sid, StepState.waiting_approval,
                                           lease_owner=None, lease_until=None,

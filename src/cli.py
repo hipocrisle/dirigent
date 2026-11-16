@@ -60,28 +60,36 @@ async def cmd_status(args) -> None:
 async def cmd_approve(args) -> None:
     db = DB(DB_PATH)
     await db.open()
-    sched = Scheduler(db)
+    from . import actions
     if args.reject:
-        await sched.reject(args.approve)
-        print("rejected")
+        ok = await actions.reject(db, args.approve)
     else:
-        await sched.approve(args.approve)
-        print("approved")
+        ok = await actions.approve(db, args.approve)
+    print("ok" if ok else "no-op")
     await db.close()
 
 
 async def cmd_cancel(args) -> None:
     db = DB(DB_PATH)
     await db.open()
-    ok = await db.transition_order(args.cancel, OrderState.cancelled)
-    # каскадно гасим шаги
-    for s in await db.steps_of(args.cancel):
-        from .states import StepState, TERMINAL_STEPS
-        st = StepState(s["state"])
-        if st not in TERMINAL_STEPS:
-            await db.transition_step(args.cancel, s["id"], StepState.cancelled)
+    from . import actions
+    ok = await actions.cancel_order(db, args.cancel)
     print("cancelled" if ok else "no transition")
     await db.close()
+
+
+async def cmd_pause(args) -> None:
+    db = DB(DB_PATH)
+    await db.open()
+    from . import actions
+    ok = await actions.pause_order(db, args.pause) if not args.resume else await actions.resume_order(db, args.pause)
+    print("ok" if ok else "no-op")
+    await db.close()
+
+
+async def cmd_api(args) -> None:
+    from .api import serve
+    await serve(host=args.host, port=args.port, db_path=DB_PATH)
 
 
 def main() -> None:
@@ -105,6 +113,14 @@ def main() -> None:
 
     c = sub.add_parser("cancel")
     c.add_argument("cancel", help="order id")
+
+    pa = sub.add_parser("pause")
+    pa.add_argument("pause", help="order id")
+    pa.add_argument("--resume", action="store_true")
+
+    ap = sub.add_parser("api")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=9310)
 
     args = p.parse_args()
     globals()["DB_PATH"] = args.db
