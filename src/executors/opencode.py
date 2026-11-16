@@ -20,6 +20,19 @@ CONFIG = "/root/.config/opencode/opencode.json"
 _KLUCHI_USAGE = ("tokens_in", "tokens_out", "usd")
 
 
+def _kill_tree(proces) -> None:
+    """SIGKILL всей process-group (start_new_session): сироты невозможны."""
+    import os
+    import signal
+    try:
+        os.killpg(os.getpgid(proces.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proces.kill()
+        except Exception:
+            pass
+
+
 def classify(stderr: str, rc: int) -> ErrorClass:
     """Класс ошибки по stderr и коду выхода; непонятное -> unknown."""
     nizhnij = (stderr or "").lower()
@@ -113,6 +126,7 @@ class OpencodeExecutor:
                 cwd=workdir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # своя process-group: killpg убивает всё дерево
             )
         except OSError as e:
             return StepResult(ok=False, error_class=ErrorClass.runtime,
@@ -122,7 +136,7 @@ class OpencodeExecutor:
                 proces.communicate(), timeout=step.timeout_seconds
             )
         except asyncio.TimeoutError:
-            proces.kill()
+            _kill_tree(proces)
             await proces.wait()
             # закрыть трубы до выхода из цикла события: иначе asyncio
             # ругается «Event loop is closed» при сборке мусора

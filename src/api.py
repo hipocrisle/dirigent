@@ -109,6 +109,31 @@ class Api:
                                       req.match_info["sid"])
         return web.json_response({"ok": ok})
 
+    async def diagnose_step(self, req) -> web.Response:
+        from ..procmon import diagnose
+        oid, sid = req.match_info["oid"], req.match_info["sid"]
+        repo = await self.db.get_order_repo(oid)
+        return web.json_response(diagnose(oid, sid, repo))
+
+    async def kill_step(self, req) -> web.Response:
+        from ..states import StepState
+        from ..procmon import kill_processes
+        oid, sid = req.match_info["oid"], req.match_info["sid"]
+        cur = await self.db.conn.execute(
+            "SELECT state FROM steps WHERE order_id=? AND id=?", (oid, sid))
+        row = await cur.fetchone()
+        if not row:
+            return web.json_response({"error": "not found"}, status=404)
+        if StepState(row["state"]) != StepState.running:
+            return web.json_response({"ok": False, "error": "step not running",
+                                      "state": row["state"]})
+        result = await __import__("asyncio").to_thread(kill_processes, oid, sid)
+        ok = await self.db.transition_step(
+            oid, sid, StepState.cancelled, error_text="killed via api",
+            lease_owner=None, lease_until=None)
+        await self.db.event("step.killed", oid, sid, data=result)
+        return web.json_response({"ok": ok, **result})
+
     async def approve(self, req) -> web.Response:
         aid = req.match_info["aid"]
         ok = await actions.approve(self.db, aid)
@@ -144,6 +169,8 @@ def build_app(db: DB) -> web.Application:
     app.router.add_get("/approvals/open", api.open_approvals)
     app.router.add_post("/orders", api.create_order)
     app.router.add_post("/orders/{oid}/steps/{sid}/retry", api.retry_step)
+    app.router.add_get("/orders/{oid}/steps/{sid}/diagnose", api.diagnose_step)
+    app.router.add_post("/orders/{oid}/steps/{sid}/kill", api.kill_step)
     app.router.add_post("/approvals/{aid}/approve", api.approve)
     app.router.add_post("/approvals/{aid}/reject", api.reject)
     app.router.add_post("/orders/{oid}/pause", api.pause)

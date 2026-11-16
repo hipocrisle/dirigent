@@ -191,3 +191,26 @@ async def test_open_approvals_endpoint(db, sched, client):
     r = await client.get("/approvals/open")
     rows = await r.json()
     assert any(x["order_id"] == oid for x in rows)
+
+
+async def test_kill_refuses_non_running(db, sched, client):
+    spec = OrderSpec.model_validate(yaml.safe_load(
+        yaml_order([{"id": "a", "type": "mock.ok"}], goal="kill-guard")))
+    oid = await db.create_order(spec)
+    await db.transition_order(oid, OrderState.active)
+    await run_ticks(sched, 5)
+    r = await client.post(f"/orders/{oid}/steps/a/kill")
+    assert r.status == 200
+    d = await r.json()
+    assert d["ok"] is False and d["state"] == "completed"
+
+
+async def test_diagnose_endpoint(db, client):
+    spec = OrderSpec.model_validate(yaml.safe_load(
+        yaml_order([{"id": "a", "type": "mock.ok"}], goal="diag")))
+    oid = await db.create_order(spec)
+    r = await client.get(f"/orders/{oid}/steps/a/diagnose")
+    assert r.status == 200
+    d = await r.json()
+    assert d["worktree_exists"] in (True, False)
+    assert isinstance(d["processes"], list)

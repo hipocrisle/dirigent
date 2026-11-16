@@ -516,6 +516,41 @@ async def retry_step(order_id: str, step_id: str) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
 
+@server.tool()
+async def diagnose_step(order_id: str, step_id: str) -> dict:
+    """Диагностика живого процесса шага: pid/CPU/RAM/время/wchan, состояние worktree.
+
+    Процессы ищутся по cwd=worktree шага. Подсказка hint срабатывает при
+    подозрении на сетевой сталл (ep_poll + ~0% CPU дольше 10 мин).
+    """
+    try:
+        r = _get(f"/orders/{order_id}/steps/{step_id}/diagnose")
+        _journal("diagnose_step", True)
+        return r
+    except Exception as e:
+        _journal("diagnose_step", False)
+        return {"error": str(e)[:200]}
+
+
+@server.tool()
+async def kill_step_process(order_id: str, step_id: str) -> dict:
+    """Безопасно остановить процессы running-шага: SIGTERM -> 10с -> SIGKILL.
+
+    Только для running-шагов; иначе структурированный отказ. Аудит: step.killed.
+    """
+    try:
+        req = urllib.request.Request(
+            API + f"/orders/{order_id}/steps/{step_id}/kill",
+            data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=TIMEOUT + 15) as r:
+            out = json.loads(r.read().decode())
+        _journal("kill_step_process", bool(out.get("ok")))
+        return out
+    except Exception as e:
+        _journal("kill_step_process", False)
+        return {"ok": False, "error": str(e)[:200]}
+
+
 # ═══ MCP v2: согласования (APPROVAL) ════════════════════════
 
 @server.tool()
