@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Фейк Codex CLI для тестов WP-2.
-# СИНТЕТИЧЕСКИЕ тексты, для тестов классификации; не копия реальных строк.
-# Использование: codex-fake.sh MODE [prompt], где MODE:
+# СИНТЕТИЧЕСКИЕ, для тестов классификации; не копия реальных строк.
+# Использование: codex-fake.sh exec [флаги] <prompt>
+# режим — переменная CODEX_FAKE_MODE:
 #   success | quota | auth | network | silent | runtime | hang
+# CODEX_FAKE_ARGV — файл, куда построчно записать argv (проверка без shell).
 set -u
-# Режим: первый аргумент; если он `exec` (как настоящий CLI) — из CODEX_FAKE_MODE.
-MODE="${1:-success}"
-if [ "${MODE}" = "exec" ]; then MODE="${CODEX_FAKE_MODE:-success}"; fi
+MODE="${CODEX_FAKE_MODE:-success}"
+
+if [ -n "${CODEX_FAKE_ARGV:-}" ]; then printf '%s\n' "$@" > "$CODEX_FAKE_ARGV"; fi
 
 case "$MODE" in
   success)

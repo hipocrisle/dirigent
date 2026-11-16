@@ -34,11 +34,20 @@ def classify(stderr: str, rc: int) -> ErrorClass:
     return ErrorClass.ok
 
 
-def usage_iz_stdout(stdout: str) -> dict[str, float]:
-    """Последняя JSON-строка с usage -> токены и стоимость (только факт).
+def _chislo(v) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
-    Берём лишь известные числовые поля; ждём `usage` на верхнем уровне или
-    в `message.usage`. Нет JSON -> {} (оценок не придумываем).
+
+def usage_iz_stdout(stdout: str) -> dict[str, float]:
+    """Последняя JSON-строка с расходом -> токены и стоимость (только факт).
+
+    Понимаем три формы (поля сверить с `--format json`, не выдумываем):
+    1) {"usage": {"tokens_in", "tokens_out", "usd"}};
+    2) {"message": {"usage": {...}}} — как в транскрипте сессии;
+    3) строка события step-finish: {"type": "step-finish", "part":
+       {"cost": 0.0012, "tokens": {"input": 230, "output": 3}}}
+       (`input` без кэша: кэш из отдельного поля «cache» не прибавляем).
+    Нет ни одного числа -> {}: оценок не придумываем.
     """
     for stroka in reversed((stdout or "").splitlines()):
         stroka = stroka.strip()
@@ -53,13 +62,24 @@ def usage_iz_stdout(stdout: str) -> dict[str, float]:
         usage = dannye.get("usage")
         if usage is None and isinstance(dannye.get("message"), dict):
             usage = dannye["message"].get("usage")
-        if not isinstance(usage, dict):
-            continue
-        fakt = {}
-        for k in _KLUCHI_USAGE:
-            v = usage.get(k)
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                fakt[k] = float(v)
+        fakt: dict[str, float] = {}
+        if isinstance(usage, dict):
+            for k in _KLUCHI_USAGE:
+                ch = _chislo(usage.get(k))
+                if ch is not None:
+                    fakt[k] = ch
+        elif isinstance(dannye.get("part"), dict):
+            chast = dannye["part"]
+            tokeny = chast.get("tokens") if isinstance(chast.get("tokens"), dict) else {}
+            pary = {
+                "tokens_in": tokeny.get("input"),
+                "tokens_out": tokeny.get("output"),
+                "usd": chast.get("cost"),
+            }
+            for k, v in pary.items():
+                ch = _chislo(v)
+                if ch is not None:
+                    fakt[k] = ch
         return fakt
     return {}
 

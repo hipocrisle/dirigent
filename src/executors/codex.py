@@ -98,9 +98,15 @@ class CodexExecutor:
 
     tag = "codex"
 
-    def __init__(self, binary: str = "codex", home: str | None = None):
+    def __init__(self, binary: str = "codex", home: str | None = None,
+                 flags: list[str] | None = None):
         self.binary = binary
         self.home = home or str(pathlib.Path.home())
+        # Флаги авто-режима. Сверено на codex-cli 0.167.2: `exec --full-auto`
+        # больше не существует (unexpected argument). `--approve-for-me`
+        # описан как автоматическое подтверждение в workspace-write, НО
+        # реальной квотой он не проверялся (запрет задания) — см. отчёт.
+        self.flags = list(flags) if flags is not None else ["--approve-for-me"]
 
     async def available(self) -> bool:
         if not shutil.which(self.binary):
@@ -114,7 +120,7 @@ class CodexExecutor:
         return None
 
     async def run(self, step: StepSpec, workdir: str | None = None) -> StepResult:
-        argv = [shutil.which(self.binary) or self.binary, "exec", "--full-auto", step.prompt]
+        argv = [shutil.which(self.binary) or self.binary, "exec", *self.flags, step.prompt]
         try:
             proces = await asyncio.create_subprocess_exec(
                 *argv,

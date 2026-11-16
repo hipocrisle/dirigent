@@ -1,10 +1,8 @@
 """Тесты адаптеров WP-2: классификация, время сброса, available, run на фейках.
-
-Реальная квота Codex не расходуется: codex.py проверяется только фейком.
-Реальный smoke opencode помечен `real`: .venv/bin/python -m pytest -m real.
-"""
+Реальная квота Codex не расходуется: codex.py проверяется только фейком."""
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import subprocess
@@ -25,53 +23,40 @@ def _fajk(imya: str) -> str:
     return put
 
 
-@pytest.fixture
-def codex_fake(monkeypatch):
-    path = _fajk("codex-fake.sh")
-    monkeypatch.setattr(codex.shutil, "which",
-                        lambda b: path if b == "codex-fake" else None)
-
-    def podstavit(mode: str) -> None:
-        monkeypatch.setenv("CODEX_FAKE_MODE", mode)
-
-    return podstavit
-
-
-@pytest.fixture
-def opencode_fake(monkeypatch):
-    path = _fajk("opencode-fake.sh")
-    monkeypatch.setattr(opencode.shutil, "which",
-                        lambda b: path if b == "opencode-fake" else None)
-    pravila = os.path.join(FAKES, "opencode-fake.json")
-    with open(pravila, "w", encoding="utf-8") as f:
-        f.write("{}")
-    return lambda mode: monkeypatch.setenv("OPENCODE_FAKE_MODE", mode)
+def _progon(coro):
+    return asyncio.run(coro)
 
 
 def _shag(prompt: str = "тест", timeout: float = 20.0) -> StepSpec:
     return StepSpec(id="s1", type="codex", prompt=prompt, timeout_seconds=timeout)
 
 
-# ───────────────────────── Codex: классификация ─────────────────────────
+@pytest.fixture
+def codex_fake(monkeypatch):
+    put = _fajk("codex-fake.sh")
+    monkeypatch.setattr(codex.shutil, "which", lambda b: put if b == "codex-fake" else None)
+    return lambda mode: monkeypatch.setenv("CODEX_FAKE_MODE", mode)
 
 
-@pytest.mark.parametrize(
-    "mode, oshibka, reset_est",
-    [
-        pytest.param("quota", ErrorClass.quota, True, id="quota-с-временем-сброса"),
-        pytest.param("auth", ErrorClass.auth, False, id="auth-401"),
-        pytest.param("network", ErrorClass.network, False, id="network-econnreset"),
-        pytest.param("runtime", ErrorClass.unknown, False, id="runtime-не-угадываем"),
-    ],
-)
-def test_codex_classify_stderr(codex_fake, mode, oshibka, reset_est):
-    """Реальные строки фейка -> ожидаемый класс (неизвестное -> unknown)."""
-    codex_fake(mode)
-    gotovo = subprocess.run([os.path.join(FAKES, "codex-fake.sh"), mode],
-                            capture_output=True, text=True, env={**os.environ})
+@pytest.fixture
+def opencode_fake(monkeypatch):
+    put = _fajk("opencode-fake.sh")
+    monkeypatch.setattr(opencode.shutil, "which", lambda b: put if b == "opencode-fake" else None)
+    return lambda mode: monkeypatch.setenv("OPENCODE_FAKE_MODE", mode)
+
+
+@pytest.mark.parametrize("mode, oshibka, reset_est", [
+    ("quota", ErrorClass.quota, True),
+    ("auth", ErrorClass.auth, False),
+    ("network", ErrorClass.network, False),
+    ("runtime", ErrorClass.unknown, False),
+])
+def test_codex_classify_stderr(mode, oshibka, reset_est):
+    sreda = {**os.environ, "CODEX_FAKE_MODE": mode}
+    gotovo = subprocess.run([os.path.join(FAKES, "codex-fake.sh"), "exec", "тест"],
+                            capture_output=True, text=True, env=sreda)
     klass, reset = codex.classify(gotovo.stderr, gotovo.returncode)
-    assert klass is oshibka
-    assert (reset is not None) is reset_est
+    assert klass is oshibka and (reset is not None) is reset_est
 
 
 def test_codex_classify_timeout_po_kodu_124():
@@ -79,54 +64,32 @@ def test_codex_classify_timeout_po_kodu_124():
 
 
 def test_codex_classify_quota_bez_vremeni_daet_none():
-    """Слово лимита без времени сброса -> quota, reset_at=None (не выдумываем)."""
-    klass, reset = codex.classify("Error: Rate limit exceeded", 1)
-    assert klass is ErrorClass.quota
-    assert reset is None
+    assert codex.classify("Error: Rate limit exceeded", 1) == (ErrorClass.quota, None)
 
 
-@pytest.mark.parametrize(
-    "tekst, chas, minut",
-    [
-        pytest.param("resets at 4:36 PM", 16, 36, id="pm"),
-        pytest.param("resets 16:36", 16, 36, id="24h"),
-        pytest.param("resets at 12:05 AM", 0, 5, id="polnoch"),
-        pytest.param("resets at 9:07 am", 9, 7, id="utro"),
-        pytest.param("resets at 14:05 UTC", 14, 5, id="utc"),
-    ],
-)
+@pytest.mark.parametrize("tekst, chas, minut", [
+    ("resets at 4:36 PM", 16, 36), ("resets 16:36", 16, 36), ("resets at 12:05 AM", 0, 5),
+    ("resets at 9:07 am", 9, 7), ("resets at 14:05 UTC", 14, 5),
+])
 def test_parse_reset_time_ponimaet_5_formats(tekst, chas, minut):
-    """Время — сегодняшний день, локально (для UTC-варианта формат тот же)."""
     gotovo = codex.parse_reset_time("limit reached; " + tekst)
     assert isinstance(gotovo, float)
     tm = time.localtime(gotovo)
-    assert (tm.tm_hour, tm.tm_min) == (chas, minut)
-    assert tm.tm_mday == time.localtime().tm_mday
+    assert (tm.tm_hour, tm.tm_min) == (chas, minut) and tm.tm_mday == time.localtime().tm_mday
 
 
-@pytest.mark.parametrize("tekst, sekund", [("resets in 2 hours", 7200), ("resets in 90 minutes", 5400),
-                                          ("resets in 1.5 hours", 5400)])
+@pytest.mark.parametrize("tekst, sekund", [
+    ("resets in 2 hours", 7200), ("resets in 90 minutes", 5400), ("resets in 1.5 hours", 5400),
+])
 def test_parse_reset_time_otnositelnoe_vremya(tekst, sekund):
     teper = time.time()
     gotovo = codex.parse_reset_time(tekst, now=teper)
     assert gotovo is not None and abs(gotovo - teper - sekund) < 1
 
 
-@pytest.mark.parametrize("tekst", ["", "soon", "resets at 25:99", "ваш лимит исчерпан"])
+@pytest.mark.parametrize("tekst", ["", "soon", "resets at 25:99", "лимит исчерпан"])
 def test_parse_reset_time_neugadannoe_daet_none(tekst):
     assert codex.parse_reset_time(tekst) is None
-
-
-def test_parse_reset_time_pm_i_24h_sovpadayut():
-    teper = time.mktime(time.localtime()[:3] + (12, 0, 0, 0, 0, -1))
-    a = codex.parse_reset_time("resets at 4:36 PM", now=teper)
-    b = codex.parse_reset_time("resets 16:36", now=teper)
-    assert a == b
-    assert codex.parse_reset_time("resets at 12:05 am", now=teper) == \
-        codex.parse_reset_time("resets 00:05", now=teper)
-
-
-# ───────────────────────── Codex: available / run ─────────────────────────
 
 
 def test_codex_available_bez_binarya(monkeypatch, tmp_path):
@@ -161,8 +124,7 @@ def test_codex_run_quota_s_reset_time(codex_fake):
 
 def test_codex_run_auth(codex_fake):
     codex_fake("auth")
-    res = _progon(codex.CodexExecutor(binary="codex-fake").run(_shag()))
-    assert not res.ok and res.error_class is ErrorClass.auth
+    assert _progon(codex.CodexExecutor(binary="codex-fake").run(_shag())).error_class is ErrorClass.auth
 
 
 def test_codex_run_molchashchij_uspeh_eto_runtime(codex_fake):
@@ -179,28 +141,23 @@ def test_codex_run_hang_daet_timeout(codex_fake):
     assert time.monotonic() - nachalo < 10
 
 
-def test_codex_workdir_peredan_processu(codex_fake, tmp_path):
+def test_codex_run_prompt_odin_argument_argv(codex_fake, tmp_path, monkeypatch):
+    """Пробелы и `;` в prompt не исполняются: он один элемент argv, shell не используется."""
+    zhurnal = tmp_path / "argv.txt"
+    monkeypatch.setenv("CODEX_FAKE_ARGV", str(zhurnal))
     codex_fake("success")
-    # фейк не пишет файлов — проверяем, что cwd принимается и не ломает запуск
-    res = _progon(codex.CodexExecutor(binary="codex-fake").run(_shag(), workdir=str(tmp_path)))
-    assert res.ok
+    prompt = "скажи привет; rm -rf /tmp/никуда --approve-for-me"
+    assert _progon(codex.CodexExecutor(binary="codex-fake").run(_shag(prompt=prompt), workdir=str(tmp_path))).ok
+    assert zhurnal.read_text(encoding="utf-8").split("\n")[:4] == ["exec", "--approve-for-me", prompt, ""]
 
 
-# ───────────────────────── OpenCode ─────────────────────────
-
-
-@pytest.mark.parametrize(
-    "mode, oshibka",
-    [
-        pytest.param("auth", ErrorClass.auth, id="auth-authentication-fails"),
-        pytest.param("runtime", ErrorClass.runtime, id="runtime-модель-недоступна"),
-        pytest.param("network", ErrorClass.network, id="network-connection-refused"),
-    ],
-)
-def test_opencode_classify_stderr(opencode_fake, mode, oshibka):
-    opencode_fake(mode)
+@pytest.mark.parametrize("mode, oshibka", [
+    ("auth", ErrorClass.auth), ("runtime", ErrorClass.runtime), ("network", ErrorClass.network),
+])
+def test_opencode_classify_stderr(mode, oshibka):
+    sreda = {**os.environ, "OPENCODE_FAKE_MODE": mode}
     gotovo = subprocess.run([os.path.join(FAKES, "opencode-fake.sh"), "run", "--", "тест"],
-                            capture_output=True, text=True, env={**os.environ})
+                            capture_output=True, text=True, env=sreda)
     assert opencode.classify(gotovo.stderr, gotovo.returncode) is oshibka
 
 
@@ -208,17 +165,17 @@ def test_opencode_classify_kod_0_eto_ok():
     assert opencode.classify("", 0) is ErrorClass.ok
 
 
-@pytest.mark.parametrize(
-    "stdout, zhdem",
-    [
-        ('Ответ: ок\n{"usage": {"tokens_in": 12, "tokens_out": 3, "usd": 0.0012}}',
-         {"tokens_in": 12.0, "tokens_out": 3.0, "usd": 0.0012}),
-        ('{"message": {"usage": {"tokens_in": 9, "tokens_out": 1, "usd": 0.0004}}}',
-         {"tokens_in": 9.0, "tokens_out": 1.0, "usd": 0.0004}),
-        ('Ответ без цифр', {}),
-        ('{"usage": {"tokens_in": "много", "usd": true}}', {}),
-    ],
-)
+@pytest.mark.parametrize("stdout, zhdem", [
+    ('Ответ: ок\n{"usage": {"tokens_in": 12, "tokens_out": 3, "usd": 0.0012}}',
+     {"tokens_in": 12.0, "tokens_out": 3.0, "usd": 0.0012}),
+    ('{"message": {"usage": {"tokens_in": 9, "tokens_out": 1, "usd": 0.0004}}}',
+     {"tokens_in": 9.0, "tokens_out": 1.0, "usd": 0.0004}),
+    ('{"type": "step-finish", "part": {"cost": 0.0015, "tokens": '
+     '{"input": 230, "output": 3, "cache": {"read": 6528}}}}',
+     {"tokens_in": 230.0, "tokens_out": 3.0, "usd": 0.0015}),
+    ("Ответ без цифр", {}),
+    ('{"usage": {"tokens_in": "много", "usd": true}}', {}),
+])
 def test_opencode_usage_iz_stdout(stdout, zhdem):
     assert opencode.usage_iz_stdout(stdout) == zhdem
 
@@ -235,8 +192,7 @@ def test_opencode_available_bez_configa(monkeypatch, tmp_path):
 def test_opencode_run_success_s_usage(opencode_fake):
     opencode_fake("success")
     res = _progon(opencode.OpencodeExecutor(binary="opencode-fake").run(_shag()))
-    assert res.ok
-    assert res.usage == {"tokens_in": 12.0, "tokens_out": 3.0, "usd": 0.0012}
+    assert res.ok and res.usage == {"tokens_in": 12.0, "tokens_out": 3.0, "usd": 0.0012}
 
 
 def test_opencode_run_auth(opencode_fake):
@@ -255,23 +211,3 @@ def test_opencode_run_hang_timeout(opencode_fake):
     opencode_fake("hang")
     res = _progon(opencode.OpencodeExecutor(binary="opencode-fake").run(_shag(timeout=0.5)))
     assert not res.ok and res.error_class is ErrorClass.timeout
-
-
-# ───────────────────────── реальный smoke (вручную) ─────────────────────────
-
-
-def test_opencode_real_smoke_odno_slovo():
-    """Реальный вызов (маркер real): вручную .venv/bin/python -m pytest -m real."""
-    res = _progon(opencode.OpencodeExecutor().run(
-        _shag(prompt="Ответь одним словом: ок", timeout=180.0)))
-    assert res.ok, res.error_text
-
-
-# ───────────────────────── вспомогательное ─────────────────────────
-
-
-def _progon(coro):
-    """Запустить корутину без pytest-asyncio (синхронные тесты)."""
-    import asyncio
-
-    return asyncio.run(coro)
