@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Дирижёр — заказы</title>
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Перейти к содержимому</a>
+
+<header class="topbar">
+  <h1 class="brand">Дирижёр <span class="muted">— визуализатор заказов</span></h1>
+  <p class="tag" role="note">Только чтение · P3a-2</p>
+</header>
+
+<main id="main" class="layout" tabindex="-1">
+  <noscript>
+    <p class="banner banner--warn">
+      Для отображения заказов нужен JavaScript. Страница только читает данные
+      через REST API и не выполняет изменений.
+    </p>
+  </noscript>
+
+  <section class="panel panel--list" aria-labelledby="list-title">
+    <div class="panel__head">
+      <h2 id="list-title">Заказы</h2>
+      <button id="refresh" type="button" class="btn">Обновить</button>
+    </div>
+    <p id="list-status" class="status" role="status" aria-live="polite"></p>
+    <ul id="orders" class="orders" aria-label="Список заказов"></ul>
+  </section>
+
+  <section class="panel panel--detail" aria-labelledby="detail-title">
+    <div class="panel__head">
+      <h2 id="detail-title">Заказ</h2>
+      <p id="detail-hint" class="muted hint">Выберите заказ из списка.</p>
+    </div>
+
+    <div id="detail" hidden>
+      <dl class="summary">
+        <dt>ID</dt><dd id="d-id"></dd>
+        <dt>Цель</dt><dd id="d-goal"></dd>
+        <dt>Статус</dt><dd id="d-state"></dd>
+        <dt>Прогресс</dt><dd id="d-progress"></dd>
+        <dt>Репозиторий</dt><dd id="d-repo"></dd>
+      </dl>
+
+      <nav class="graph-nav" aria-label="Навигация по шагам">
+        <h3 id="dag-title">Шаги (DAG)</h3>
+        <ol id="step-list" class="step-chips"></ol>
+      </nav>
+
+      <figure class="dag-figure" aria-labelledby="dag-title">
+        <div class="dag-scroll">
+          <svg id="dag" class="dag" role="img"
+               aria-label="Граф шагов заказа"></svg>
+        </div>
+        <figcaption id="dag-note" class="muted"></figcaption>
+      </figure>
+
+      <section class="inspector" aria-labelledby="insp-title">
+        <h3 id="insp-title">Инспектор шага</h3>
+        <p id="insp-empty" class="muted">Выберите шаг на графе или в списке.</p>
+        <div id="insp-body" hidden>
+          <dl class="insp">
+            <dt>Шаг</dt><dd id="i-id"></dd>
+            <dt>Тип</dt><dd id="i-type"></dd>
+            <dt>Статус</dt><dd id="i-state"></dd>
+            <dt>Попытки</dt><dd id="i-attempts"></dd>
+            <dt>Зависит от</dt><dd id="i-deps"></dd>
+            <dt>Prompt</dt><dd id="i-prompt"></dd>
+          </dl>
+          <h4>Ошибка</h4>
+          <pre id="i-error" class="code" tabindex="0" aria-label="Текст ошибки"></pre>
+          <h4>Хвост лога</h4>
+          <pre id="i-log" class="code" tabindex="0" aria-label="Хвост лога"></pre>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<script src="./app.js"></script>
+</body>
+</html>
