@@ -116,7 +116,7 @@ class Api:
         return web.json_response(diagnose(oid, sid, repo))
 
     async def kill_step(self, req) -> web.Response:
-        from ..states import StepState
+        from .states import StepState
         from .procmon import kill_processes
         oid, sid = req.match_info["oid"], req.match_info["sid"]
         cur = await self.db.conn.execute(
