@@ -7,6 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from .models import OrderSpec, StepResult, StepSpec, new_id, now
+from .policy import MAX_STEP_LAUNCHES
 from .states import OrderState, StepState, can_order, can_step
 
 SCHEMA = """
@@ -255,7 +256,8 @@ class DB:
             return await self.transition_step(
                 oid, sid, StepState.waiting_quota,
                 quota_reset_at=result.quota_reset_at, **common)
-        if attempts < spec.retry.max_attempts:
+        auto_cap = min(spec.retry.max_attempts, MAX_STEP_LAUNCHES)
+        if attempts < auto_cap:
             return await self.transition_step(
                 oid, sid, StepState.retry_scheduled,
                 backoff_until=now() + spec.retry.backoff_seconds, **common)

@@ -68,11 +68,15 @@ async def resume_order(db: DB, oid: str) -> bool:
 
 
 async def retry_step(db: DB, oid: str, sid: str) -> bool:
-    """Ручной перезапуск упавшего шага. Потолок запусков MAX_STEP_LAUNCHES."""
+    """Ручной перезапуск упавшего шага.
+
+    attempts = монотонный счётчик ФАКТИЧЕСКИХ запусков (инкремент в lease_step,
+    атомарно с захватом). Ручной разрешён, пока attempts < MAX_STEP_LAUNCHES (3);
+    счётчик НИКОГДА не сбрасывается — ни retry, ни рестарт демона.
+    """
     from .policy import MAX_STEP_LAUNCHES
     cur = await db.conn.execute(
-        "SELECT attempts, max_attempts, state FROM steps WHERE order_id=? AND id=?",
-        (oid, sid))
+        "SELECT attempts, state FROM steps WHERE order_id=? AND id=?", (oid, sid))
     row = await cur.fetchone()
     if not row:
         return False
@@ -81,19 +85,16 @@ async def retry_step(db: DB, oid: str, sid: str) -> bool:
         return False
     if row["attempts"] >= MAX_STEP_LAUNCHES:
         await db.event("step.retry_refused", oid, sid,
-                       {"attempts": row["attempts"]})
+                       {"attempts": row["attempts"], "cap": MAX_STEP_LAUNCHES})
         return False
-    # оставляем одну попытку в запасе (max_attempts=2: attempts=1 -> ещё один запуск)
-    await db.conn.execute(
-        "UPDATE steps SET attempts=? WHERE order_id=? AND id=?",
-        (min(row["attempts"], row["max_attempts"] - 1), oid, sid))
-    await db.conn.commit()
     ok = await db.transition_step(
         oid, sid, StepState.retry_scheduled, force=True,
         backoff_until=__import__("time").time() + 1.0,
         error_text=None)
     if ok:
-        await db.event("step.retry_manual", oid, sid, {"attempts": row["attempts"]})
+        await db.event("step.retry_manual", oid, sid,
+                       {"attempts": row["attempts"],
+                        "next_launch": row["attempts"] + 1})
         ostate = await db.get_order_state(oid)
         if ostate == OrderState.error:
             await db.transition_order(oid, OrderState.active)

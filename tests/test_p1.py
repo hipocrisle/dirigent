@@ -121,3 +121,48 @@ async def test_quota_failover(db, sched):
     # c1: запуск с квотой + запуск после восстановления; d1 — ровно один
     assert codex.calls == 2
     assert deep.calls == 1
+
+
+class FailForever(ScriptedExecutor):
+    async def run(self, step, workdir=None):
+        await asyncio.sleep(0.02)
+        return StepResult(ok=False, error_class=ErrorClass.runtime, error_text="boom")
+
+
+async def test_retry_accounting_and_cap(db, sched):
+    """Дефект drill: attempts монотонно считает ФАКТИЧЕСКИЕ запуски; потолок 3;
+    4-й retry отказ; рестарт демона счётчик не сбрасывает."""
+    from src import actions
+    from src.policy import MAX_STEP_LAUNCHES
+    sched.exec["mock"] = FailForever()
+    oid = await submit(db, [{"id": "s1", "type": "mock.fail runtime",
+                             "retry": {"max_attempts": 2, "backoff_seconds": 0.1}}])
+    await run_ticks(sched, 10, delay=0.15)
+    row = (await db.steps_of(oid))[0]
+    assert StepState(row["state"]) == StepState.failed
+    assert row["attempts"] == 2, f"auto: 2 запуска, got {row['attempts']}"
+
+    assert await actions.retry_step(db, oid, "s1")          # 3-й запуск
+    await run_ticks(sched, 8, delay=0.2)
+    row = (await db.steps_of(oid))[0]
+    assert row["attempts"] == 3 and StepState(row["state"]) == StepState.failed
+
+    assert not await actions.retry_step(db, oid, "s1")      # 4-й — отказ
+    row = (await db.steps_of(oid))[0]
+    assert row["attempts"] == 3
+
+    # рестарт демона: счётчик и состояние сохраняются
+    sched2 = Scheduler(db)
+    await sched2.recover()
+    row = (await db.steps_of(oid))[0]
+    assert row["attempts"] == 3 and StepState(row["state"]) == StepState.failed
+
+    # аудит: число lease-событий == числу запусков
+    cur = await db.conn.execute(
+        "SELECT COUNT(*) n FROM events WHERE order_id=? AND step_id='s1' AND kind='step.lease'",
+        (oid,))
+    assert (await cur.fetchone())["n"] == MAX_STEP_LAUNCHES
+    cur2 = await db.conn.execute(
+        "SELECT COUNT(*) n FROM events WHERE order_id=? AND kind='step.retry_refused'",
+        (oid,))
+    assert (await cur2.fetchone())["n"] == 1
