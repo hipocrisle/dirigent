@@ -25,6 +25,7 @@ MAX_PARALLEL_EXECUTORS = 2
 # Allowlist репозиториев для MCP create_order (P0/P1)
 ALLOWED_REPOS = [
     "/matrix/bench-pilot/repo",
+    "/matrix/dirigent",   # сам Дирижёр: worktree-изоляция, мердж только в dirigent/integrate
 ]
 
 DANGEROUS_VIA_TELEGRAM_ONLY = [

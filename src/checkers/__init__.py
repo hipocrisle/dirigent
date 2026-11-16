@@ -72,8 +72,24 @@ def check_artifact(path: str, acceptance: dict) -> CheckResult:
 CHECKERS = {
     "go_test": check_go_test,
     "artifact": check_artifact,
+    "pytest": None,        # требует workdir-репо, обрабатывается в run_acceptance
     "repo_changed": None,  # требует workdir-репо, обрабатывается в run_acceptance
 }
+
+
+def check_pytest(workdir: str) -> CheckResult:
+    """Тесты проекта Python: .venv/bin/python -m pytest -q (если есть pytest.ini/setup.py)."""
+    import shutil
+    if not (Path(workdir) / "pytest.ini").exists() and not (Path(workdir) / "setup.py").exists() \
+            and not (Path(workdir) / "pyproject.toml").exists():
+        return CheckResult(False, "pytest.ini/pyproject не найден — чекер pytest не для этого репо")
+    py = str(Path(workdir) / ".venv" / "bin" / "python")
+    if not Path(py).exists():
+        py = shutil.which("python3") or "python3"
+    p = subprocess.run([py, "-m", "pytest", "-q"], cwd=workdir,
+                       capture_output=True, text=True, timeout=1200)
+    tail = "\n".join((p.stdout + p.stderr).splitlines()[-10:])
+    return CheckResult(p.returncode == 0, tail)
 
 
 def check_repo_changed(workdir: str) -> CheckResult:
@@ -93,6 +109,10 @@ def run_acceptance(step: StepSpec, workdir: str | None,
     for name in checks:
         if name == "go_test":
             r = check_go_test(workdir or ".")
+        elif name == "pytest":
+            if not workdir:
+                return CheckResult(False, "pytest: нет workdir")
+            r = check_pytest(workdir)
         elif name == "repo_changed":
             if not workdir:
                 return CheckResult(False, "repo_changed: нет workdir")

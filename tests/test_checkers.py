@@ -82,3 +82,8 @@ def test_run_acceptance_requires_changes(go_repo):
     spec = StepSpec(id="s", type="mock.ok",
                     acceptance={"checks": ["go_test", "repo_changed"]})
     assert not run_acceptance(spec, go_repo, {}).ok   # без правок — провал
+
+
+def test_pytest_checker_on_dirigent_repo():
+    r = check_pytest("/matrix/dirigent")
+    assert r.ok, r.details[-400:]
