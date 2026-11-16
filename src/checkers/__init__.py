@@ -85,8 +85,8 @@ def check_pytest(workdir: str) -> CheckResult:
             and not (Path(workdir) / "pyproject.toml").exists():
         return CheckResult(False, "pytest.ini/pyproject не найден — чекер pytest не для этого репо")
     py = None
-    p = Path(workdir).resolve()
-    for cand in [p, *p.parents[:4]]:
+    root = Path(workdir).resolve()
+    for cand in [root, *root.parents[:4]]:
         v = cand / ".venv" / "bin" / "python"
         if v.exists():
             py = str(v)
