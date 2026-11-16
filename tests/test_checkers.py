@@ -85,13 +85,12 @@ def test_run_acceptance_requires_changes(go_repo):
     assert not run_acceptance(spec, go_repo, {}).ok   # без правок — провал
 
 
-def test_pytest_checker_on_fixture_repo(tmp_path):
-    import os
+def test_pytest_checker_on_fixture_repo(tmp_path, monkeypatch):
     (tmp_path / "pytest.ini").write_text("[pytest]\ntestpaths = .\n")
-    (tmp_path / ".venv" / "bin").mkdir(parents=True)
-    os.symlink("/matrix/dirigent/.venv/bin/python",
-               tmp_path / ".venv" / "bin" / "python")
     (tmp_path / "test_x.py").write_text("def test_ok():\n    assert True\n")
+    monkeypatch.setattr("shutil.which",
+                        lambda cmd: "/matrix/dirigent/.venv/bin/python"
+                        if cmd == "python3" else None)
     r = check_pytest(str(tmp_path))
     assert r.ok, r.details[-300:]
     (tmp_path / "test_x.py").write_text("def test_bad():\n    assert False\n")
