@@ -1,45 +1,61 @@
 """MCP-шлюз ChatGPT → Дирижёр (P0-тест связи).
 
-Отдельный тонкий адаптер (спека P0): только 3 безопасных инструмента.
-Основной API (127.0.0.1:9310) для внешней сети закрыт — шлюз сам его дёргает
-локально. Auth: статический bearer-токен (DIRIGENT_MCP_TOKEN). Журнал вызовов
-без секретов, rate-limit, таймауты. create_test_order живёт в отдельной
-песочнице (mcp_sandbox.db) — никогда не видна планировщику.
+Отдельный тонкий адаптер: только 3 безопасных инструмента. Основной API
+(127.0.0.1:9310) для внешней сети закрыт — шлюз дёргает его локально.
+
+Авторизация: полноценный OAuth 2.0 с динамической регистрацией клиентов
+(ChatGPT требует OAuth для пользовательских MCP; без метаданных его форма
+отказывается подключаться). Поток: ChatGPT регистрируется → браузер владельца
+открывает /mcp-consent → вводит секрет Дирижёра (тот же статический bearer) →
+одноразовый код → токены. Хранилища в памяти: рестарт = повторная привязка
+в ChatGPT (для P0 приемлемо, постоянство — отдельным пакетом).
+
+Guard: rate-limit 30/мин + журнал вызовов (mcp_calls). create_test_order —
+идемпотентная песочница (mcp_sandbox.db), планировщику не видна.
 """
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import sqlite3
 import time
 import urllib.request
 import uuid
 
-from mcp.server.auth.provider import AccessToken, TokenVerifier
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.provider import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationParams,
+    OAuthAuthorizationServerProvider,
+    OAuthClientInformationFull,
+    OAuthToken,
+    RefreshToken,
+    TokenError,
+)
+from mcp.server.auth.settings import (
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.responses import HTMLResponse, RedirectResponse
 
 API = os.environ.get("DIRIGENT_API", "http://127.0.0.1:9310")
 SANDBOX_DB = os.environ.get("DIRIGENT_SANDBOX_DB",
                             "/matrix/dirigent/mcp_sandbox.db")
 JOURNAL_DB = os.environ.get("DIRIGENT_DB", "/matrix/dirigent/dirigent.db")
-VERSION = "0.1.0-p0"
+PUBLIC_URL = os.environ.get("DIRIGENT_MCP_PUBLIC_URL",
+                            "https://dirigent-mcp.local")
+STATIC_TOKEN = os.environ.get("DIRIGENT_MCP_TOKEN", "")
+VERSION = "0.2.0-p0-oauth"
 TIMEOUT = 8.0
-RPM_LIMIT = 30          # запросов в минуту на токен
-
-
-class StaticTokenVerifier(TokenVerifier):
-    """Bearer-токен из окружения. Не подходящий -> None -> 401."""
-
-    def __init__(self, tokens: set[str]):
-        self.tokens = tokens
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        if token in self.tokens:
-            return AccessToken(token=token, client_id="owner",
-                               scopes=["dirigent:read", "dirigent:test-write"])
-        return None
+RPM_LIMIT = 30
+SCOPES = ["dirigent:read", "dirigent:test-write"]
+ACCESS_TTL = 24 * 3600
+REFRESH_TTL = 30 * 86400
+CODE_TTL = 300
 
 
 def _get(path: str):
@@ -55,8 +71,106 @@ def _journal(tool: str, ok: bool, ip: str = "") -> None:
             c.execute("INSERT INTO mcp_calls VALUES (?,?,?,?)",
                       (time.time(), tool, int(ok), ip[:40]))
     except Exception:
-        pass  # журнал не должен ломать вызов
+        pass
 
+
+class MiniOAuthProvider(OAuthAuthorizationServerProvider):
+    """Минимальный OAuth-провайдер для одного владельца.
+
+    Авторизация — через consent-страницу с секретом; клиенты регистрируются
+    динамически (ChatGPT сам себя регистрирует). Всё в памяти.
+    """
+
+    def __init__(self, owner_secret: str):
+        self.owner_secret = owner_secret
+        self.clients: dict[str, OAuthClientInformationFull] = {}
+        self.pending: dict[str, tuple[str, AuthorizationParams]] = {}
+        self.codes: dict[str, AuthorizationCode] = {}
+        self.access: dict[str, AccessToken] = {}
+        self.refresh: dict[str, RefreshToken] = {}
+
+    # ── клиенты ──────────────────────────────────────────────
+    async def get_client(self, client_id: str):
+        return self.clients.get(client_id)
+
+    async def register_client(self, info: OAuthClientInformationFull) -> None:
+        if not info.client_id:
+            info.client_id = "cl_" + secrets.token_hex(8)
+        self.clients[info.client_id] = info
+
+    # ── authorize: consent-страница ──────────────────────────
+    async def authorize(self, client: OAuthClientInformationFull,
+                        params: AuthorizationParams) -> str:
+        consent_id = "cs_" + secrets.token_urlsafe(16)
+        self.pending[consent_id] = (client.client_id, params)
+        return f"/mcp-consent?id={consent_id}"
+
+    async def load_authorization_code(self, client, code: str):
+        c = self.codes.get(code)
+        if not c or c.client_id != client.client_id:
+            return None
+        return c
+
+    def mint(self, client_id: str, scopes: list[str],
+             resource: str | None) -> tuple[AccessToken, RefreshToken]:
+        at = AccessToken(token="dat_" + secrets.token_urlsafe(24),
+                         client_id=client_id, scopes=scopes,
+                         expires_at=int(time.time()) + ACCESS_TTL,
+                         resource=resource, subject="owner", claims={})
+        rt = RefreshToken(token="drt_" + secrets.token_urlsafe(24),
+                          client_id=client_id, scopes=scopes,
+                          expires_at=int(time.time()) + REFRESH_TTL,
+                          resource=resource, subject="owner")
+        self.access[at.token] = at
+        self.refresh[rt.token] = rt
+        return at, rt
+
+    @staticmethod
+    def _token(at: AccessToken, rt: RefreshToken) -> OAuthToken:
+        return OAuthToken(access_token=at.token, token_type="Bearer",
+                          expires_in=ACCESS_TTL,
+                          scope=" ".join(at.scopes), refresh_token=rt.token)
+
+    async def exchange_authorization_code(self, client, code) -> OAuthToken:
+        if code.expires_at and code.expires_at < time.time():
+            raise TokenError(error="invalid_grant",
+                             error_description="code expired")
+        self.codes.pop(code.code, None)
+        at, rt = self.mint(client.client_id, code.scopes or SCOPES,
+                           code.resource)
+        return self._token(at, rt)
+
+    async def load_refresh_token(self, client, token: str):
+        rt = self.refresh.get(token)
+        if not rt or rt.client_id != client.client_id:
+            return None
+        return rt
+
+    async def exchange_refresh_token(self, client, rt,
+                                     scopes: list[str]) -> OAuthToken:
+        self.refresh.pop(rt.token, None)
+        self.access.pop(rt.token, None)
+        new_scopes = scopes or rt.scopes
+        at, rt2 = self.mint(client.client_id, new_scopes, rt.resource)
+        return self._token(at, rt2)
+
+    async def load_access_token(self, token: str):
+        # Статический токен остаётся валидным навсегда (для curl/мониторинга).
+        if token and token == self.owner_secret:
+            return AccessToken(token=token, client_id="owner", scopes=SCOPES,
+                               expires_at=int(time.time()) + 10 * 365 * 86400,
+                               resource=None, subject="owner", claims={})
+        at = self.access.get(token)
+        if at and at.expires_at and at.expires_at < time.time():
+            return None
+        return at
+
+    async def revoke_token(self, token) -> None:
+        self.access.pop(token.token, None)
+        self.refresh.pop(token.token, None)
+
+
+provider = MiniOAuthProvider(STATIC_TOKEN)
 
 server = MCPServer(
     name="dirigent-test",
@@ -68,16 +182,63 @@ server = MCPServer(
     ),
     version=VERSION,
     auth=AuthSettings(
-        issuer_url="https://dirigent-mcp.local",
-        resource_server_url="https://dirigent-mcp.local",
+        issuer_url=PUBLIC_URL,
+        service_documentation_url=PUBLIC_URL,
+        resource_server_url=PUBLIC_URL + "/mcp",
         required_scopes=[],
-        # Аудиторию проверяет сам StaticTokenVerifier; иначе SDK отвергает
-        # чужой Host (421) — а у туннеля адрес эфемерный.
         validate_token_resource=False,
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True, valid_scopes=SCOPES, default_scopes=SCOPES),
+        revocation_options=RevocationOptions(enabled=True),
     ),
-    token_verifier=StaticTokenVerifier(
-        {os.environ["DIRIGENT_MCP_TOKEN"]} if os.environ.get("DIRIGENT_MCP_TOKEN") else set()),
+    auth_server_provider=provider,
 )
+
+
+@server.custom_route("/mcp-consent", methods=["GET", "POST"])
+async def mcp_consent(request):
+    """Страница подтверждения: секрет владельца -> одноразовый код."""
+    consent_id = (request.query_params.get("id")
+                  if request.method == "GET"
+                  else (await request.form()).get("id", ""))
+    pending = provider.pending.get(consent_id)
+    if not pending:
+        return HTMLResponse("<h3>Сессия подтверждения не найдена или истекла.</h3>",
+                            status_code=404)
+    client_id, params = pending
+    if request.method == "GET":
+        return HTMLResponse(f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Дирижёр — доступ</title></head><body style="font-family:sans-serif;max-width:420px;margin:4em auto;padding:0 1em">
+<h2>🎩 Дирижёр (тест)</h2>
+<p>ChatGPT запрашивает доступ к оркестратору (клиент <code>{client_id}</code>).</p>
+<p>Разрешённые возможности: чтение статуса и заказов, фиктивные тестовые заказы в песочнице.</p>
+<form method="post" action="/mcp-consent">
+  <input type="hidden" name="id" value="{consent_id}">
+  <label>Секрет Дирижёра:<br>
+    <input type="password" name="secret" required style="width:100%;padding:.6em;margin:.5em 0">
+  </label>
+  <button type="submit" style="padding:.7em 1.4em">Разрешить</button>
+</form></body></html>""")
+    form = await request.form()
+    if form.get("secret", "") != provider.owner_secret or not provider.owner_secret:
+        _journal("mcp_consent", False)
+        return HTMLResponse("<h3>⛔ Неверный секрет.</h3>", status_code=403)
+    provider.pending.pop(consent_id, None)
+    code = AuthorizationCode(
+        code="cd_" + secrets.token_urlsafe(24), scopes=list(params.scopes or SCOPES),
+        expires_at=int(time.time()) + CODE_TTL, client_id=client_id,
+        code_challenge=params.code_challenge,
+        redirect_uri=params.redirect_uri,
+        redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
+        resource=params.resource, subject="owner")
+    provider.codes[code.code] = code
+    _journal("mcp_consent", True)
+    redirect = str(params.redirect_uri or "")
+    sep = "&" if "?" in redirect else "?"
+    location = (redirect + sep
+                + f"code={code.code}&state={params.state or ''}")
+    return RedirectResponse(location, status_code=302)
 
 
 @server.tool()
@@ -140,7 +301,7 @@ async def create_test_order(goal: str, request_id: str) -> dict:
 
 
 class Guard:
-    """ASGI-обёртка: rate-limit на токен + 429. Журнал пишут сами инструменты."""
+    """ASGI-обёртка: rate-limit на токен + 429."""
 
     def __init__(self, app):
         self.app = app
@@ -155,7 +316,8 @@ class Guard:
         now = time.time()
         win = [t for t in self.hits.get(token, []) if now - t < 60]
         if len(win) >= self.RPM_LIMIT:
-            body = json.dumps({"error": "rate_limited", "rpm": self.RPM_LIMIT}).encode()
+            body = json.dumps({"error": "rate_limited",
+                               "rpm": self.RPM_LIMIT}).encode()
             await send({"type": "http.response.start", "status": 429,
                         "headers": [(b"content-type", b"application/json")]})
             await send({"type": "http.response.body", "body": body})
@@ -165,10 +327,8 @@ class Guard:
         await self.app(scope, receive, send)
 
 
-# DNS-rebind защита MCP SDK по умолчанию режет любой Host кроме localhost:* —
-# а у Quick Tunnel адрес эфемерный. Отключаем: сервер и так loopback-only,
-# перед ним Cloudflare, плюс обязательный bearer-токен. Для постоянного named
-# tunnel вернём allowed_hosts с фиксированным доменом.
+# DNS-rebind защита SDK по умолчанию режет любой Host кроме localhost:* — а у
+# Quick Tunnel адрес эфемерный. Отключено: loopback-only + Cloudflare + OAuth.
 app = Guard(server.streamable_http_app(
     stateless_http=True,
     transport_security=TransportSecuritySettings(

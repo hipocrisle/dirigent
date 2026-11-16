@@ -5,13 +5,14 @@
 set -e
 cd /matrix/dirigent
 export DIRIGENT_MCP_TOKEN="$(cat /matrix/secrets/dirigent-mcp-token)"
+export DIRIGENT_MCP_PUBLIC_URL="$(cat /matrix/secrets/dirigent-mcp-public-url 2>/dev/null || echo https://dirigent-mcp.local)"
 
 echo "[stack] dirigent api на 127.0.0.1:9310"
 .venv/bin/python -m src.cli api &
 API_PID=$!
 sleep 2
 
-echo "[stack] MCP-шлюз на 127.0.0.1:9320 (bearer из /matrix/secrets/dirigent-mcp-token)"
+echo "[stack] MCP-шлюз на 127.0.0.1:9320 (OAuth, issuer=$DIRIGENT_MCP_PUBLIC_URL)"
 .venv/bin/python src/mcp_server.py &
 MCP_PID=$!
 
