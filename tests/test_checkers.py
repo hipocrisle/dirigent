@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from src.checkers import (CheckResult, check_artifact, check_diff_applies,
-                          check_go_test, check_repo_changed, run_acceptance)
+                          check_go_test, check_pytest, check_repo_changed,
+                          run_acceptance)
 from src.models import StepSpec
 
 
@@ -84,6 +85,11 @@ def test_run_acceptance_requires_changes(go_repo):
     assert not run_acceptance(spec, go_repo, {}).ok   # без правок — провал
 
 
-def test_pytest_checker_on_dirigent_repo():
-    r = check_pytest("/matrix/dirigent")
-    assert r.ok, r.details[-400:]
+def test_pytest_checker_on_fixture_repo(tmp_path):
+    (tmp_path / "pytest.ini").write_text("[pytest]\ntestpaths = .\n")
+    (tmp_path / "test_x.py").write_text("def test_ok():\n    assert True\n")
+    r = check_pytest(str(tmp_path))
+    assert r.ok, r.details[-300:]
+    (tmp_path / "test_x.py").write_text("def test_bad():\n    assert False\n")
+    r2 = check_pytest(str(tmp_path))
+    assert not r2.ok
