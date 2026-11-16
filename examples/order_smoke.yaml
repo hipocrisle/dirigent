@@ -1,0 +1,14 @@
+goal: "Смоук-заказ: цепочка из трёх шагов с квотой на втором"
+steps:
+  - id: plan
+    type: mock.ok
+    prompt: "подготовить"
+  - id: work
+    type: mock.quota
+    prompt: "основная работа"
+    depends_on: [plan]
+  - id: polish
+    type: mock.ok
+    prompt: "финал"
+    depends_on: [work]
+    approval: {mode: after, default_action: wait, timeout_seconds: 3600}
