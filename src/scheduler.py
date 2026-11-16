@@ -133,6 +133,12 @@ class Scheduler:
         finally:
             hb.cancel()
 
+        if result.ok and spec.acceptance.get("checks"):
+            from .checkers import run_acceptance
+            chk = run_acceptance(spec, None, result.artifacts)
+            if not chk.ok:
+                result = StepResult(ok=False, error_class="runtime",
+                                    error_text=f"acceptance failed: {chk.details}")
         if result.ok and spec.approval.mode == "after":
             await self.db.transition_step(oid, sid, StepState.waiting_approval,
                                           lease_owner=None, lease_until=None,

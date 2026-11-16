@@ -1,0 +1,66 @@
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from src.checkers import (CheckResult, check_artifact, check_diff_applies,
+                          check_go_test, run_acceptance)
+from src.models import StepSpec
+
+
+@pytest.fixture
+def go_repo(tmp_path):
+    (tmp_path / "go.mod").write_text("module t\n\ngo 1.22\n")
+    (tmp_path / "a.go").write_text("package t\n\nfunc Add(a, b int) int { return a + b }\n")
+    (tmp_path / "a_test.go").write_text(
+        'package t\n\nimport "testing"\n\nfunc TestAdd(t *testing.T) { if Add(1,2) != 3 { t.Fatal("no") } }\n')
+    return str(tmp_path)
+
+
+def test_go_test_ok(go_repo):
+    r = check_go_test(go_repo)
+    assert r.ok, r.details
+
+
+def test_go_test_fails(go_repo):
+    (Path(go_repo) / "a_test.go").write_text(
+        'package t\n\nimport "testing"\n\nfunc TestAdd(t *testing.T) { t.Fatal("boom") }\n')
+    r = check_go_test(go_repo)
+    assert not r.ok
+
+
+def test_diff_applies(go_repo):
+    diff = """--- a/a.go
++++ b/a.go
+@@ -1,3 +1,3 @@
+ package t
+
+-func Add(a, b int) int { return a + b }
++func Add(a, b int) int { return a + b + 1 }
+"""
+    # честный diff против копии: git apply --check на временной копии
+    r = check_diff_applies(go_repo, diff)
+    assert r.ok
+
+
+def test_diff_broken(go_repo):
+    r = check_diff_applies(go_repo, "--- a/nope\n+++ b/nope\n@@\n-не существует\n")
+    assert not r.ok
+
+
+def test_artifact_exists(tmp_path):
+    f = tmp_path / "out.mp4"
+    f.write_bytes(b"\x00" * 100)
+    assert check_artifact(str(f), {}).ok
+    assert not check_artifact(str(tmp_path / "no.mp4"), {}).ok
+
+
+def test_run_acceptance_chain(go_repo):
+    spec = StepSpec(id="s", type="mock.ok", acceptance={"checks": ["go_test"]})
+    r = run_acceptance(spec, go_repo, {})
+    assert r.ok
+
+
+def test_run_acceptance_unknown_checker(go_repo):
+    spec = StepSpec(id="s", type="mock.ok", acceptance={"checks": ["wat"]})
+    assert not run_acceptance(spec, go_repo, {}).ok
