@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS approvals (
   created REAL NOT NULL,
   resolved REAL
 );
+CREATE TABLE IF NOT EXISTS order_requests (
+  request_id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  created REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_steps_state ON steps(state);
 CREATE INDEX IF NOT EXISTS idx_events_order ON events(order_id, seq);
 """
@@ -107,6 +112,22 @@ class DB:
         await self.event("order.created", oid, data={"goal": spec.goal, "steps": len(spec.steps)})
         await self.conn.commit()
         return oid
+
+    async def create_order_idem(self, request_id: str, spec: OrderSpec) -> tuple[str, bool]:
+        """Идемпотентное создание: тот же request_id -> тот же заказ."""
+        if request_id:
+            cur = await self.conn.execute(
+                "SELECT order_id FROM order_requests WHERE request_id=?", (request_id,))
+            row = await cur.fetchone()
+            if row:
+                return row["order_id"], False
+        oid = await self.create_order(spec)
+        if request_id:
+            await self.conn.execute(
+                "INSERT INTO order_requests(request_id, order_id, created) VALUES (?,?,?)",
+                (request_id, oid, now()))
+            await self.conn.commit()
+        return oid, True
 
     async def get_order_state(self, oid: str) -> OrderState | None:
         cur = await self.conn.execute("SELECT state FROM orders WHERE id=?", (oid,))

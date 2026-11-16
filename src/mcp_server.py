@@ -300,6 +300,192 @@ async def create_test_order(goal: str, request_id: str) -> dict:
     return {"created": True, "duplicate": False, "order_id": oid, "sandbox": True}
 
 
+# ═══ MCP v2: наблюдаемость (READ) ═══════════════════════════
+
+@server.tool()
+async def get_order(order_id: str) -> dict:
+    """Детали заказа: состояние, шаги, открытые согласования. Только чтение."""
+    try:
+        d = _get(f"/orders/{order_id}")
+        _journal("get_order", True)
+    except Exception as e:
+        _journal("get_order", False)
+        return {"error": str(e)[:200]}
+    if isinstance(d, dict) and d.get("error"):
+        return {"error": "not found"}
+    return {"id": d["id"], "goal": d["goal"], "state": d["state"],
+            "repo": d.get("repo"), "steps": d["steps"],
+            "open_approvals": d["open_approvals"]}
+
+
+@server.tool()
+async def get_logs(order_id: str, limit: int = 30) -> list[dict]:
+    """Журнал событий заказа (переходы, ошибки, апрувы). Только чтение."""
+    limit = max(1, min(int(limit), 200))
+    try:
+        rows = _get(f"/orders/{order_id}/log?limit={limit}")
+        _journal("get_logs", True)
+        return rows
+    except Exception as e:
+        _journal("get_logs", False)
+        return [{"error": str(e)[:200]}]
+
+
+@server.tool()
+async def get_pending_approvals() -> list[dict]:
+    """Все открытые согласования по всем заказам. Только чтение."""
+    try:
+        rows = _get("/approvals/open")
+        _journal("get_pending_approvals", True)
+        return rows
+    except Exception as e:
+        _journal("get_pending_approvals", False)
+        return [{"error": str(e)[:200]}]
+
+
+@server.tool()
+async def get_costs() -> dict:
+    """Расходы и квоты: только факт; неизмеримое — unknown (не $0!). Только чтение."""
+    try:
+        s = _get("/stats")
+        _journal("get_costs", True)
+        return s
+    except Exception as e:
+        _journal("get_costs", False)
+        return {"error": str(e)[:200]}
+
+
+@server.tool()
+async def get_resource_status() -> dict:
+    """Исполнители и ресурсы: доступность codex/opencode/DE-1. Только чтение."""
+    import shutil
+    from pathlib import Path
+    import json as _json
+    codex_auth = Path.home() / ".codex" / "auth.json"
+    opencode_cfg = Path("/root/.config/opencode/opencode.json")
+    _journal("get_resource_status", True)
+    return {
+        "executors": {
+            "codex": {"installed": bool(shutil.which("codex")),
+                      "auth": codex_auth.is_file()},
+            "opencode": {"installed": bool(shutil.which("opencode")),
+                         "config": opencode_cfg.is_file()},
+        },
+        "de1": {"role": "orchestrator host", "status": "ok"},
+        "homepc": "unknown",  # проверка по ssh — отдельный адаптер (медиа-фаза)
+        "note": "доступность ≠ свободная квота; квота Codex без probe — unknown",
+    }
+
+
+# ═══ MCP v2: управление (CONTROL) ═══════════════════════════
+
+def _post_json(path: str) -> dict:
+    req = urllib.request.Request(API + path, data=b"", method="POST")
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        return json.loads(r.read().decode())
+
+
+@server.tool()
+async def pause_order(order_id: str) -> dict:
+    """Приостановить заказ: running дорабатывает, новые шаги не стартуют. Идемпотентно."""
+    try:
+        r = _post_json(f"/orders/{order_id}/pause")
+        _journal("pause_order", bool(r.get("ok")))
+        return r
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@server.tool()
+async def resume_order(order_id: str) -> dict:
+    """Продолжить приостановленный заказ. Идемпотентно."""
+    try:
+        r = _post_json(f"/orders/{order_id}/resume")
+        _journal("resume_order", bool(r.get("ok")))
+        return r
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@server.tool()
+async def cancel_order(order_id: str) -> dict:
+    """Отменить заказ и все незавершённые шаги. Идемпотентно. Аудит в журнале."""
+    try:
+        r = _post_json(f"/orders/{order_id}/cancel")
+        _journal("cancel_order", bool(r.get("ok")))
+        return r
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@server.tool()
+async def retry_step(order_id: str, step_id: str) -> dict:
+    """Перезапустить упавший шаг (в пределах политики: макс. 3 запуска)."""
+    try:
+        r = _post_json(f"/orders/{order_id}/steps/{step_id}/retry")
+        _journal("retry_step", bool(r.get("ok")))
+        return r
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+# ═══ MCP v2: согласования (APPROVAL) ════════════════════════
+
+@server.tool()
+async def approve(approval_id: str) -> dict:
+    """Принять согласование (результат шага/операция)."""
+    try:
+        r = _post_json(f"/approvals/{approval_id}/approve")
+        _journal("approve", bool(r.get("ok")))
+        return r
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@server.tool()
+async def reject(approval_id: str) -> dict:
+    """Отклонить согласование (шаг будет отменён)."""
+    try:
+        r = _post_json(f"/approvals/{approval_id}/reject")
+        _journal("reject", bool(r.get("ok")))
+        return r
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+# ═══ MCP v2: CREATE (gated) ═════════════════════════════════
+
+@server.tool()
+async def create_order(goal: str, steps: list[dict], request_id: str,
+                       repo: str | None = None,
+                       budget_max_usd: float | None = None) -> dict:
+    """Создать РЕАЛЬНЫЙ заказ Дирижёра (gated: allowlist repo, бюджет ≤ $1,
+    обязательный request_id для идемпотентности). Исполнители запускаются
+    настоящие — следи за шагами через get_order.
+
+    steps: [{"id","type"(opencode|codex|mock.ok),"prompt","depends_on":[...],
+             "acceptance":{"checks":["go_test"]}}]
+    """
+    body = json.dumps({
+        "request_id": request_id[:80],
+        "order": {"goal": goal[:300], "repo": repo, "steps": steps,
+                  "budget_max_usd": budget_max_usd},
+    }).encode()
+    req = urllib.request.Request(API + "/orders", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            out = json.loads(r.read().decode())
+        _journal("create_order", "error" not in out)
+        return out
+    except urllib.error.HTTPError as e:
+        _journal("create_order", False)
+        return {"error": f"http {e.code}: {e.read().decode()[:200]}"}
+    except Exception as e:
+        _journal("create_order", False)
+        return {"error": str(e)[:200]}
+
+
 class Guard:
     """ASGI-обёртка: rate-limit на токен + 429."""
 

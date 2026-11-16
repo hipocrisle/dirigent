@@ -16,5 +16,10 @@ echo "[stack] MCP-шлюз на 127.0.0.1:9320 (OAuth, issuer=$DIRIGENT_MCP_PUBL
 .venv/bin/python src/mcp_server.py &
 MCP_PID=$!
 
-trap "kill $API_PID $MCP_PID 2>/dev/null; exit 0" TERM INT
+sleep 2
+echo "[stack] планировщик (daemon)"
+.venv/bin/python -m src.cli daemon &
+DAEMON_PID=$!
+
+trap "kill $API_PID $MCP_PID $DAEMON_PID 2>/dev/null; exit 0" TERM INT
 wait

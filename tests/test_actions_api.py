@@ -109,3 +109,85 @@ async def test_api_flow(db, client):
 async def test_api_404(client):
     r = await client.get("/orders/ord_nope")
     assert r.status == 404
+
+
+# ── MCP v2: gated create_order + retry ────────────────────
+from src.policy import ORDER_BUDGET_USD_MAX  # noqa: E402
+
+
+async def test_api_create_order_allowlist(db, client):
+    ok_body = {"request_id": "req-a1", "order": {
+        "goal": "t", "repo": "/matrix/bench-pilot/repo",
+        "steps": [{"id": "s1", "type": "mock.ok"}]}}
+    r = await client.post("/orders", json=ok_body)
+    assert r.status == 200
+    d = await r.json()
+    assert d["created"] and not d["duplicate"]
+    # idempotency
+    r = await client.post("/orders", json=ok_body)
+    d2 = await r.json()
+    assert d2["duplicate"] and d2["order_id"] == d["order_id"]
+
+
+async def test_api_create_order_repo_denied(db, client):
+    r = await client.post("/orders", json={"request_id": "x", "order": {
+        "goal": "t", "repo": "/matrix/nexusbro",
+        "steps": [{"id": "s1", "type": "mock.ok"}]}})
+    assert r.status == 403
+
+
+async def test_api_create_order_budget_cap(db, client):
+    r = await client.post("/orders", json={"request_id": "x", "order": {
+        "goal": "t", "repo": "/matrix/bench-pilot/repo",
+        "budget_max_usd": ORDER_BUDGET_USD_MAX + 1,
+        "steps": [{"id": "s1", "type": "mock.ok"}]}})
+    assert r.status == 403
+
+
+async def test_api_create_order_invalid(db, client):
+    r = await client.post("/orders", json={"request_id": "x", "order": {
+        "goal": "t", "steps": [{"id": "s1", "type": "mock.ok",
+                                "depends_on": ["ghost"]}]}})
+    assert r.status == 400
+
+
+async def test_retry_step_flow(db, sched):
+    from src import actions
+    from src.executors.mock import ScriptedExecutor
+    from src.models import StepResult, ErrorClass
+
+    class FailOnce(ScriptedExecutor):
+        async def run(self, step, workdir=None):
+            self.n = getattr(self, "n", 0) + 1
+            if self.n == 1:
+                return StepResult(ok=False, error_class=ErrorClass.runtime,
+                                  error_text="boom")
+            return StepResult(ok=True)
+
+    sched.exec["mock"] = FailOnce()
+    spec = OrderSpec.model_validate(yaml.safe_load(yaml_order([
+        {"id": "s1", "type": "mock.ok",
+         "retry": {"max_attempts": 1, "backoff_seconds": 0.1}}])))
+    oid = await db.create_order(spec)
+    await db.transition_order(oid, OrderState.active)
+    await run_ticks(sched, 8)
+    st = {r["id"]: StepState(r["state"]) for r in await db.steps_of(oid)}
+    assert st["s1"] == StepState.failed
+
+    assert await actions.retry_step(db, oid, "s1")
+    await run_ticks(sched, 8, delay=0.2)
+    st = {r["id"]: StepState(r["state"]) for r in await db.steps_of(oid)}
+    assert st["s1"] == StepState.completed
+    assert await db.get_order_state(oid) == OrderState.done
+
+
+async def test_open_approvals_endpoint(db, sched, client):
+    spec = OrderSpec.model_validate(yaml.safe_load(yaml_order([
+        {"id": "s1", "type": "mock.ok",
+         "approval": {"mode": "after", "default_action": "wait", "timeout_seconds": 60}}])))
+    oid = await db.create_order(spec)
+    await db.transition_order(oid, OrderState.active)
+    await run_ticks(sched, 5)
+    r = await client.get("/approvals/open")
+    rows = await r.json()
+    assert any(x["order_id"] == oid for x in rows)

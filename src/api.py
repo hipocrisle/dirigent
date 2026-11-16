@@ -58,6 +58,49 @@ class Api:
                  "data": json.loads(r["data_json"] or "{}")} for r in await cur.fetchall()]
         return web.json_response(list(reversed(rows)))
 
+    async def open_approvals(self, _req) -> web.Response:
+        cur = await self.db.conn.execute(
+            "SELECT a.id, a.order_id, a.step_id, a.question, a.expires_at, o.goal"
+            " FROM approvals a JOIN orders o ON o.id = a.order_id"
+            " WHERE a.status='open' ORDER BY a.created")
+        return web.json_response([dict(r) for r in await cur.fetchall()])
+
+    async def create_order(self, req) -> web.Response:
+        """MCP/ChatGPT: создание реального заказа. Allowlist + бюджет + idempotency."""
+        from .models import OrderSpec
+        from .policy import order_budget_ok, repo_allowed
+        from .states import OrderState
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"error": "bad json"}, status=400)
+        request_id = (body.get("request_id") or "")[:80]
+        data = body.get("order") or {}
+        repo = data.get("repo")
+        if not repo_allowed(repo):
+            await self.db.event("order.refused", None,
+                                data={"reason": "repo_not_allowed", "repo": repo})
+            return web.json_response(
+                {"error": f"repo not allowed: {repo}. allowlist only"}, status=403)
+        if not order_budget_ok(data.get("budget_max_usd")):
+            return web.json_response(
+                {"error": "budget over MCP cap, owner confirmation needed"},
+                status=403)
+        try:
+            spec = OrderSpec.model_validate(data)
+        except Exception as e:
+            return web.json_response({"error": f"invalid order: {e}"}, status=400)
+        oid, created = await self.db.create_order_idem(request_id, spec)
+        if created:
+            await self.db.transition_order(oid, OrderState.active)
+        return web.json_response({"order_id": oid, "created": created,
+                                  "duplicate": not created})
+
+    async def retry_step(self, req) -> web.Response:
+        ok = await actions.retry_step(self.db, req.match_info["oid"],
+                                      req.match_info["sid"])
+        return web.json_response({"ok": ok})
+
     async def approve(self, req) -> web.Response:
         aid = req.match_info["aid"]
         ok = await actions.approve(self.db, aid)
@@ -90,6 +133,9 @@ def build_app(db: DB) -> web.Application:
     app.router.add_get("/orders", api.orders)
     app.router.add_get("/orders/{oid}", api.order_detail)
     app.router.add_get("/orders/{oid}/log", api.order_log)
+    app.router.add_get("/approvals/open", api.open_approvals)
+    app.router.add_post("/orders", api.create_order)
+    app.router.add_post("/orders/{oid}/steps/{sid}/retry", api.retry_step)
     app.router.add_post("/approvals/{aid}/approve", api.approve)
     app.router.add_post("/approvals/{aid}/reject", api.reject)
     app.router.add_post("/orders/{oid}/pause", api.pause)
