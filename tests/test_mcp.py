@@ -129,3 +129,19 @@ def test_oauth_persistence_across_restart(tmp_path):
     p2 = m.MiniOAuthProvider("secret", db)   # «рестарт»
     assert run(p2.get_client("cl_persist")) is not None
     assert run(p2.load_access_token(at.token)) is not None
+
+
+def test_unknown_client_resurrects(tmp_path):
+    """ChatGPT шлёт кэшированный client_id после переподключения — сервер оживляет."""
+    db = str(tmp_path / "oauth.db")
+    m = _load()
+    p = m.MiniOAuthProvider("secret", db)
+    run = asyncio.run
+    c = run(p.get_client("d699e63d-cached-by-chatgpt"))
+    assert c is not None and c.client_id == "d699e63d-cached-by-chatgpt"
+    # персистентно
+    p2 = m.MiniOAuthProvider("secret", db)
+    c2 = run(p2.get_client("d699e63d-cached-by-chatgpt"))
+    assert c2 is not None
+    # permissive redirect
+    assert c2.validate_redirect_uri("https://chatgpt.com/cb") is not None

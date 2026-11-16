@@ -33,6 +33,7 @@ from mcp.server.auth.provider import (
     RefreshToken,
     TokenError,
 )
+from mcp.shared.auth import InvalidRedirectUriError
 from mcp.server.auth.settings import (
     AuthSettings,
     ClientRegistrationOptions,
@@ -74,6 +75,22 @@ def _journal(tool: str, ok: bool, ip: str = "") -> None:
         pass
 
 
+class PermissiveClient(OAuthClientInformationFull):
+    """Клиент для single-owner контурa: redirect_uri не валидируем жёстко.
+
+    ChatGPT кэширует регистрацию и предъявляет старые client_id после
+    переподключений; сервер оживляет их сам. Риски закрыты выше: consent
+    требует секрет владельца, коды одноразовые, PKCE обязателен.
+    """
+
+    def validate_redirect_uri(self, redirect_uri):
+        if redirect_uri is not None:
+            return redirect_uri
+        if len(self.redirect_uris or []) == 1:
+            return self.redirect_uris[0]
+        raise InvalidRedirectUriError("redirect_uri must be specified")
+
+
 class MiniOAuthProvider(OAuthAuthorizationServerProvider):
     """Минимальный OAuth-провайдер для одного владельца.
 
@@ -107,7 +124,7 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
         with sqlite3.connect(self.db_path) as c:
             for cid, raw in c.execute("SELECT client_id, json FROM clients"):
                 try:
-                    self.clients[cid] = OAuthClientInformationFull.model_validate_json(raw)
+                    self.clients[cid] = PermissiveClient.model_validate_json(raw)
                 except pydantic.ValidationError:
                     continue
             for code, raw in c.execute("SELECT code, json FROM codes"):
@@ -143,7 +160,18 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
 
     # ── клиенты ──────────────────────────────────────────────
     async def get_client(self, client_id: str):
-        return self.clients.get(client_id)
+        c = self.clients.get(client_id)
+        if c is None and client_id:
+            # ChatGPT кэширует client_id и предъявляет его после переподключений,
+            # даже если регистрация была потеряна. Оживляем неизвестных клиентов
+            # вместо отказа — иначе вечная петля "Client ID not found".
+            c = PermissiveClient(
+                client_id=client_id, client_name="resurrected",
+                redirect_uris=[], scope=" ".join(SCOPES),
+                response_types=["code"], token_endpoint_auth_method="none")
+            self.clients[client_id] = c
+            self._save_client(c)
+        return c
 
     async def register_client(self, info: OAuthClientInformationFull) -> None:
         if not info.client_id:
