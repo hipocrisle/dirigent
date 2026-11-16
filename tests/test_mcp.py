@@ -41,8 +41,10 @@ def test_provider_full_oauth_flow():
         # имитация consent POST: мини-логика из хендлера
         client_id, prm = p.pending.pop(csid)
         assert client_id == info.client_id
+        import time as _time
         code = m.AuthorizationCode(
-            code="cd_test", scopes=list(prm.scopes), expires_at=int(asyncio.get_event_loop().time()) + 300,
+            code="cd_test", scopes=list(prm.scopes),
+            expires_at=int(_time.time()) + 300,
             client_id=client_id, code_challenge=prm.code_challenge,
             redirect_uri=str(prm.redirect_uri),
             redirect_uri_provided_explicitly=prm.redirect_uri_provided_explicitly,
