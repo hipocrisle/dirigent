@@ -18,9 +18,17 @@ DB_PATH = "/matrix/dirigent/dirigent.db"
 
 
 def _step_public(r) -> dict:
-    return {"id": r["id"], "state": r["state"], "type": r["type"],
-            "attempts": r["attempts"], "error_class": r["error_class"],
-            "error_text": (r["error_text"] or "")[:300]}
+    out = {"id": r["id"], "state": r["state"], "type": r["type"],
+           "attempts": r["attempts"], "error_class": r["error_class"],
+           "error_text": (r["error_text"] or "")[:300]}
+    if r["result_json"]:
+        try:
+            tail = json.loads(r["result_json"]).get("log_tail", "")
+            if tail:
+                out["log_tail"] = tail
+        except Exception:
+            pass
+    return out
 
 
 class Api:

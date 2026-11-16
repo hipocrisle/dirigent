@@ -92,3 +92,4 @@ class StepResult(BaseModel):
     usage: dict[str, float] = {}           # tokens_in/out, usd — факт из API
     quota_reset_at: float | None = None    # если квота и время известно (иначе None=unknown)
     run_id: str | None = None              # внешний id для status()/cancel()
+    log_tail: str = ""                     # хвост stdout исполнителя (наблюдаемость)

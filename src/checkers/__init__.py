@@ -72,7 +72,18 @@ def check_artifact(path: str, acceptance: dict) -> CheckResult:
 CHECKERS = {
     "go_test": check_go_test,
     "artifact": check_artifact,
+    "repo_changed": None,  # требует workdir-репо, обрабатывается в run_acceptance
 }
+
+
+def check_repo_changed(workdir: str) -> CheckResult:
+    """Coding-шаг обязан что-то изменить: «модель сказала готово» без правок — провал."""
+    p = subprocess.run(["git", "-C", workdir, "status", "--porcelain"],
+                       capture_output=True, text=True, timeout=60)
+    if p.returncode != 0:
+        return CheckResult(False, "git status недоступен (не репо?)")
+    lines = [l for l in p.stdout.splitlines() if l.strip()]
+    return CheckResult(bool(lines), f"изменений: {len(lines)}" if lines else "рабочее дерево чистое")
 
 
 def run_acceptance(step: StepSpec, workdir: str | None,
@@ -82,6 +93,10 @@ def run_acceptance(step: StepSpec, workdir: str | None,
     for name in checks:
         if name == "go_test":
             r = check_go_test(workdir or ".")
+        elif name == "repo_changed":
+            if not workdir:
+                return CheckResult(False, "repo_changed: нет workdir")
+            r = check_repo_changed(workdir)
         elif name == "diff_apply":
             diff = step.inputs.get("diff", "")
             if not diff:

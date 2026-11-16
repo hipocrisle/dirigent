@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from src.checkers import (CheckResult, check_artifact, check_diff_applies,
-                          check_go_test, run_acceptance)
+                          check_go_test, check_repo_changed, run_acceptance)
 from src.models import StepSpec
 
 
@@ -64,3 +64,17 @@ def test_run_acceptance_chain(go_repo):
 def test_run_acceptance_unknown_checker(go_repo):
     spec = StepSpec(id="s", type="mock.ok", acceptance={"checks": ["wat"]})
     assert not run_acceptance(spec, go_repo, {}).ok
+
+
+def test_repo_changed_detects_noop(go_repo):
+    r = check_repo_changed(go_repo)
+    assert not r.ok          # чистое дерево -> шаг ничего не сделал
+    (Path(go_repo) / "x.go").write_text("package t\n")
+    r2 = check_repo_changed(go_repo)
+    assert r2.ok
+
+
+def test_run_acceptance_requires_changes(go_repo):
+    spec = StepSpec(id="s", type="mock.ok",
+                    acceptance={"checks": ["go_test", "repo_changed"]})
+    assert not run_acceptance(spec, go_repo, {}).ok   # без правок — провал

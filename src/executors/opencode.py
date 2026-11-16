@@ -134,11 +134,12 @@ class OpencodeExecutor:
         stdout = vyhod.decode("utf-8", "replace")
         usage = usage_iz_stdout(stdout)
         klass = classify(stderr, rc)
+        tail = stdout.strip()[-800:]
         if klass is ErrorClass.ok and not stdout.strip():
             return StepResult(ok=False, error_class=ErrorClass.runtime,
                               error_text="opencode: пустой вывод при коде 0 (молчаливый успех)",
                               usage=usage)
         if klass is ErrorClass.ok:
-            return StepResult(ok=True, usage=usage)
+            return StepResult(ok=True, usage=usage, log_tail=tail)
         return StepResult(ok=False, error_class=klass, usage=usage,
-                          error_text=stderr.strip()[:2000])
+                          error_text=stderr.strip()[:2000], log_tail=tail)
