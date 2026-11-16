@@ -118,6 +118,23 @@ class Scheduler:
             await self.db.event("step.waiting_resource", oid, sid, {"tag": tag})
             return
 
+        # worktree-изоляция кодовых шагов (AD-11)
+        workdir = repo
+        wt = wt_branch = None
+        if repo and tag in ("codex", "opencode"):
+            from .workspace import ensure_worktree
+            try:
+                wt, wt_branch = ensure_worktree(repo, oid, sid)
+                workdir = wt
+                await self.db.event("step.worktree", oid, sid,
+                                    {"path": wt, "branch": wt_branch})
+            except Exception as e:
+                await self.db.event("step.worktree_failed", oid, sid, {"err": str(e)[:200]})
+                await self.db.finish_step(oid, sid, StepResult(
+                    ok=False, error_class="runtime",
+                    error_text=f"worktree: {str(e)[:200]}"))
+                return
+
         if spec.approval.mode == "before":
             if not await self._ask_and_wait(oid, sid,
                                             f"Шаг {sid} требует подтверждения перед запуском: {spec.prompt}",
@@ -127,7 +144,7 @@ class Scheduler:
         hb = asyncio.create_task(self._heartbeat(oid, sid))
         try:
             result = await asyncio.wait_for(
-                ex.run(spec, workdir=repo), timeout=spec.timeout_seconds)
+                ex.run(spec, workdir=workdir), timeout=spec.timeout_seconds)
         except asyncio.TimeoutError:
             result = StepResult(ok=False, error_class="timeout",
                                 error_text=f"timeout {spec.timeout_seconds}s")
@@ -136,11 +153,26 @@ class Scheduler:
 
         if result.ok and spec.acceptance.get("checks"):
             from .checkers import run_acceptance
-            chk = run_acceptance(spec, repo, result.artifacts)
+            chk = run_acceptance(spec, workdir, result.artifacts)
             if not chk.ok:
                 result = StepResult(ok=False, error_class="runtime",
                                     error_text=f"acceptance failed: {chk.details}",
-                                    usage=result.usage)
+                                    usage=result.usage, log_tail=result.log_tail)
+
+        # слияние в dirigent/integrate после успешной приёмки (AD-11)
+        if result.ok and wt:
+            from .workspace import cleanup_worktree, commit_all, merge_to_integrate
+            committed = commit_all(wt, f"dirigent: {oid}/{sid}")
+            ok, detail = merge_to_integrate(repo, wt_branch)
+            result.artifacts["branch"] = wt_branch
+            result.artifacts["merge"] = detail
+            result.artifacts["committed"] = committed
+            await self.db.event("step.merge", oid, sid,
+                                {"branch": wt_branch, "ok": ok, "detail": detail[:200]})
+            if ok:
+                cleanup_worktree(repo, wt, wt_branch)
+            else:
+                result.log_tail = (result.log_tail + f"\n[worktree сохранён: {wt}]").strip()
         if result.ok and spec.approval.mode == "after":
             await self.db.transition_step(oid, sid, StepState.waiting_approval,
                                           lease_owner=None, lease_until=None,
