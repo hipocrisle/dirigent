@@ -78,16 +78,68 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
     """Минимальный OAuth-провайдер для одного владельца.
 
     Авторизация — через consent-страницу с секретом; клиенты регистрируются
-    динамически (ChatGPT сам себя регистрирует). Всё в памяти.
+    динамически (ChatGPT сам себя регистрирует). Хранилище — sqlite
+    (mcp_oauth.db): переживает рестарты шлюза, иначе привязки ChatGPT
+    сгорали бы при каждом деплое (клиент помнит свой client_id).
     """
 
-    def __init__(self, owner_secret: str):
+    def __init__(self, owner_secret: str,
+                 db_path: str = "/matrix/dirigent/mcp_oauth.db"):
         self.owner_secret = owner_secret
+        self.db_path = db_path
         self.clients: dict[str, OAuthClientInformationFull] = {}
         self.pending: dict[str, tuple[str, AuthorizationParams]] = {}
         self.codes: dict[str, AuthorizationCode] = {}
         self.access: dict[str, AccessToken] = {}
         self.refresh: dict[str, RefreshToken] = {}
+        self._init_db()
+        self._load()
+
+    # ── persistence ──────────────────────────────────────────
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS clients (client_id TEXT PRIMARY KEY, json TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, json TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, kind TEXT, json TEXT)")
+
+    def _load(self) -> None:
+        import pydantic
+        with sqlite3.connect(self.db_path) as c:
+            for cid, raw in c.execute("SELECT client_id, json FROM clients"):
+                try:
+                    self.clients[cid] = OAuthClientInformationFull.model_validate_json(raw)
+                except pydantic.ValidationError:
+                    continue
+            for code, raw in c.execute("SELECT code, json FROM codes"):
+                try:
+                    self.codes[code] = AuthorizationCode.model_validate_json(raw)
+                except pydantic.ValidationError:
+                    continue
+            for tok, kind, raw in c.execute("SELECT token, kind, json FROM tokens"):
+                try:
+                    model = AccessToken if kind == "a" else RefreshToken
+                    (self.access if kind == "a" else self.refresh)[tok] = model.model_validate_json(raw)
+                except pydantic.ValidationError:
+                    continue
+
+    def _save_client(self, info) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("INSERT OR REPLACE INTO clients VALUES (?,?)",
+                      (info.client_id, info.model_dump_json()))
+
+    def _save_code(self, code) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("INSERT OR REPLACE INTO codes VALUES (?,?)",
+                      (code.code, code.model_dump_json()))
+
+    def _save_token(self, tok, kind: str) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute("INSERT OR REPLACE INTO tokens VALUES (?,?,?)",
+                      (tok.token, kind, tok.model_dump_json()))
+
+    def _drop(self, table: str, key_col: str, key: str) -> None:
+        with sqlite3.connect(self.db_path) as c:
+            c.execute(f"DELETE FROM {table} WHERE {key_col}=?", (key,))
 
     # ── клиенты ──────────────────────────────────────────────
     async def get_client(self, client_id: str):
@@ -97,6 +149,7 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
         if not info.client_id:
             info.client_id = "cl_" + secrets.token_hex(8)
         self.clients[info.client_id] = info
+        self._save_client(info)
 
     # ── authorize: consent-страница ──────────────────────────
     async def authorize(self, client: OAuthClientInformationFull,
@@ -123,6 +176,8 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
                           resource=resource, subject="owner")
         self.access[at.token] = at
         self.refresh[rt.token] = rt
+        self._save_token(at, "a")
+        self._save_token(rt, "r")
         return at, rt
 
     @staticmethod
@@ -136,6 +191,7 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
             raise TokenError(error="invalid_grant",
                              error_description="code expired")
         self.codes.pop(code.code, None)
+        self._drop("codes", "code", code.code)
         at, rt = self.mint(client.client_id, code.scopes or SCOPES,
                            code.resource)
         return self._token(at, rt)
@@ -150,6 +206,7 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
                                      scopes: list[str]) -> OAuthToken:
         self.refresh.pop(rt.token, None)
         self.access.pop(rt.token, None)
+        self._drop("tokens", "token", rt.token)
         new_scopes = scopes or rt.scopes
         at, rt2 = self.mint(client.client_id, new_scopes, rt.resource)
         return self._token(at, rt2)
@@ -168,6 +225,7 @@ class MiniOAuthProvider(OAuthAuthorizationServerProvider):
     async def revoke_token(self, token) -> None:
         self.access.pop(token.token, None)
         self.refresh.pop(token.token, None)
+        self._drop("tokens", "token", token.token)
 
 
 provider = MiniOAuthProvider(STATIC_TOKEN)
@@ -233,6 +291,7 @@ async def mcp_consent(request):
         redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
         resource=params.resource, subject="owner")
     provider.codes[code.code] = code
+    provider._save_code(code)
     _journal("mcp_consent", True)
     redirect = str(params.redirect_uri or "")
     sep = "&" if "?" in redirect else "?"

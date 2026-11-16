@@ -110,3 +110,22 @@ def test_guard_rate_limit():
 def test_app_builds():
     m = _load()
     assert m.app is not None
+
+
+def test_oauth_persistence_across_restart(tmp_path):
+    """Клиенты и токены переживают пересоздание провайдера (рестарт шлюза)."""
+    db = str(tmp_path / "oauth.db")
+    m = _load()
+    p1 = m.MiniOAuthProvider("secret", db)
+    run = asyncio.run
+    info = m.OAuthClientInformationFull(
+        client_id="cl_persist", client_name="t",
+        redirect_uris=["https://cb/x"], response_types=["code"],
+        token_endpoint_auth_method="none")
+    run(p1.register_client(info))
+    at, rt = p1.mint("cl_persist", ["dirigent:read"], None)
+    p1._save_token(at, "a")
+
+    p2 = m.MiniOAuthProvider("secret", db)   # «рестарт»
+    assert run(p2.get_client("cl_persist")) is not None
+    assert run(p2.load_access_token(at.token)) is not None
