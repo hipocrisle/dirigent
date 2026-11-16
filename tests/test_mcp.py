@@ -154,3 +154,15 @@ def test_dirigent_call_dispatch_and_help():
     assert "diagnose_step" in help_res["tools"]
     bad = run(m.dirigent_call("nosuch"))
     assert "error" in bad and "available" in bad
+
+
+def test_notice_board_attach(tmp_path):
+    m = _load()
+    from src.notice import attach_notices, post
+    import src.notice as n
+    n.DB = str(tmp_path / "nd.db")
+    post("kimi", "тестовая заметка")
+    out = attach_notices({"x": 1})
+    assert out["x"] == 1 and out["notices_from_kimi"][0]["text"] == "тестовая заметка"
+    out2 = attach_notices({"x": 2})
+    assert "notices_from_kimi" not in out2  # прочитано, больше не цепляется
