@@ -110,14 +110,14 @@ class Api:
         return web.json_response({"ok": ok})
 
     async def diagnose_step(self, req) -> web.Response:
-        from ..procmon import diagnose
+        from .procmon import diagnose
         oid, sid = req.match_info["oid"], req.match_info["sid"]
         repo = await self.db.get_order_repo(oid)
         return web.json_response(diagnose(oid, sid, repo))
 
     async def kill_step(self, req) -> web.Response:
         from ..states import StepState
-        from ..procmon import kill_processes
+        from .procmon import kill_processes
         oid, sid = req.match_info["oid"], req.match_info["sid"]
         cur = await self.db.conn.execute(
             "SELECT state FROM steps WHERE order_id=? AND id=?", (oid, sid))
