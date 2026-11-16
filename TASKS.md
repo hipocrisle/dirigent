@@ -23,13 +23,15 @@
 ## WP-1 [Kimi] Ядро: схема + машина состояний + очередь (фаза 1 спеки)
 Файлы: src/db.py (SQLite WAL, миграции), src/states.py (переходы pending→ready→running→…→completed/failed, таблица переходов явная), src/scheduler.py (lease+heartbeat+semaphore=2+recovery), src/models.py (заказ/шаг, валидация pydantic или dataclasses+jsonschema), src/dag.py (топосорт, циклы).
 DoD: `pytest tests/test_core.py` — зелёные; сценарий «restart посреди running» восстанавливается (тест C ядра).
-Статус: todo
+Статус: ✅ done (14 тестов + смоук демона)
 
-## WP-2 [DeepSeek] Адаптеры codex + opencode
-Файлы: src/executors/base.py (интерфейс available/run/status/cancel, единый результат ok/result/error/class), src/executors/codex.py (headless `codex exec`, таймауты, tier-1 парсинг ошибок квоты: по stderr+коду; НЕ реализуем tier-2 — это WP-8), src/executors/opencode.py (`opencode run --model deepseek/deepseek-chat`, захват usage из ответа).
-Тесты: tests/test_executors.py — на фейковых бинарях из tests/fakes/ (shell-скрипты, эмулирующие успех/ошибку квоты/таймаут). Контракт строгий — сегодняшний урок про треш учесть: адаптер не угадывает, а возвращает класс ошибки.
-DoD: фейковые сценарии проходят, реальный smoke `opencode` (1 цент ок), codex НЕ трогаем реальной квотой.
-Статус: todo
+## WP-3 [Kimi] Acceptance checkers — ✅ done
+checkers: go_test, diff_apply (git apply --check/patch на копии), artifact (ffprobe-длительность). Влито в scheduler: acceptance-fail = runtime.
+
+## WP-2 [DeepSeek] Адаптеры codex + opencode — ✅ done (ревью Kimi: ПРИНЯТО)
+Файлы: src/executors/codex.py, src/executors/opencode.py, tests/fakes/*, tests/test_executors.py (+test_real_smoke.py, отклонение от списка — не критично). 64/64 тестов. 4м48с, 308 т/с.
+Ключевое: `--full-auto` в codex-cli 0.167.2 УДАЛЁН — DeepSeek сверил с реальным CLI и поставил `--approve-for-me` с явной оговоркой «не проверено на живой квоте» → follow-up: проверить флаг на первом реальном прогоне. usage-парсинг opencode: только факт из 3 известных JSON-форм, кэш-токены не выдумываем (честные метрики).
+Ревью Kimi (обязат. по треб. ChatGPT №1): классификация честная (unknown вместо угадайки), порядок маркеров ок, parse_reset_time 6 форматов, таймаут-путь закрывает транспорт asyncio. ПРИНЯТО без правок. Наблюдения DeepSeek учтены: run_id-задел и «молчаливый успех=runtime» зафиксирован в base.py.
 
 ## WP-3 [Kimi] Acceptance checkers
 Файлы: src/checkers/diff_apply.py (применение diff к копии worktree), src/checkers/go_test.py, src/checkers/lint.py, src/checkers/artifact_meta.py (mp4: длительность/разрешение через ffprobe; png: размер; json: схема).
