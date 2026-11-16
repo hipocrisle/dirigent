@@ -96,3 +96,14 @@ def test_pytest_checker_on_fixture_repo(tmp_path, monkeypatch):
     (tmp_path / "test_x.py").write_text("def test_bad():\n    assert False\n")
     r2 = check_pytest(str(tmp_path))
     assert not r2.ok
+
+
+def test_files_exist_checker(tmp_path):
+    spec = StepSpec(id="s", type="mock.ok",
+                    acceptance={"checks": ["files_exist"],
+                                "expect_files": ["a/x.html", "a/app.js"]})
+    (tmp_path / "a").mkdir()
+    assert not run_acceptance(spec, str(tmp_path), {}).ok
+    (tmp_path / "a" / "x.html").write_text("<html></html>")
+    (tmp_path / "a" / "app.js").write_text("console.log(1)")
+    assert run_acceptance(spec, str(tmp_path), {}).ok

@@ -102,6 +102,17 @@ def check_repo_changed(workdir: str) -> CheckResult:
     return CheckResult(bool(lines), f"изменений: {len(lines)}" if lines else "рабочее дерево чистое")
 
 
+def check_files_exist(workdir: str, expect: list[str]) -> CheckResult:
+    """Ожидаемые файлы созданы и непустые — против «успеха» без результата."""
+    missing = []
+    for rel in expect:
+        p = Path(workdir) / rel
+        if not p.exists() or p.stat().st_size == 0:
+            missing.append(rel)
+    return CheckResult(not missing,
+                       f"нет файлов: {missing}" if missing else f"файлов ок: {len(expect)}")
+
+
 def run_acceptance(step: StepSpec, workdir: str | None,
                    artifacts: dict[str, str]) -> CheckResult:
     """Все чекеры из step.acceptance.checks должны пройти."""
@@ -117,6 +128,11 @@ def run_acceptance(step: StepSpec, workdir: str | None,
             if not workdir:
                 return CheckResult(False, "repo_changed: нет workdir")
             r = check_repo_changed(workdir)
+        elif name == "files_exist":
+            expect = step.acceptance.get("expect_files", [])
+            if not expect:
+                return CheckResult(False, "files_exist: нет acceptance.expect_files")
+            r = check_files_exist(workdir or ".", expect)
         elif name == "diff_apply":
             diff = step.inputs.get("diff", "")
             if not diff:
