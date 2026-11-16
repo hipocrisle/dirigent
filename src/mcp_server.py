@@ -145,6 +145,7 @@ class Guard:
     def __init__(self, app):
         self.app = app
         self.hits: dict[str, list[float]] = {}
+        self.RPM_LIMIT = RPM_LIMIT
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -153,8 +154,8 @@ class Guard:
         token = auth.removeprefix("Bearer ").strip()
         now = time.time()
         win = [t for t in self.hits.get(token, []) if now - t < 60]
-        if len(win) >= RPM_LIMIT:
-            body = json.dumps({"error": "rate_limited", "rpm": RPM_LIMIT}).encode()
+        if len(win) >= self.RPM_LIMIT:
+            body = json.dumps({"error": "rate_limited", "rpm": self.RPM_LIMIT}).encode()
             await send({"type": "http.response.start", "status": 429,
                         "headers": [(b"content-type", b"application/json")]})
             await send({"type": "http.response.body", "body": body})
