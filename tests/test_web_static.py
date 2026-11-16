@@ -86,6 +86,19 @@ async def test_index_references_only_local_assets(client):
     assert "https://" not in body
 
 
+async def test_index_has_state_legend(client):
+    body = await (await client.get("/ui/")).text()
+    assert 'class="state-legend"' in body
+    assert 'aria-label="Легенда статусов"' in body
+
+
+async def test_static_assets_same_origin(client):
+    for path in ("/ui/index.html", "/ui/app.css", "/ui/app.js"):
+        resp = await client.get(path)
+        assert resp.status == 200
+        assert "Access-Control-Allow-Origin" not in resp.headers
+
+
 # ── безопасность ────────────────────────────────────────────
 
 async def test_js_does_not_use_innerhtml_on_user_data():

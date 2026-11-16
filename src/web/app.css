@@ -190,6 +190,12 @@ a { color: var(--accent); }
 
 .state-legend { display: flex; flex-wrap: wrap; gap: .4rem .9rem; list-style: none; padding: 0; margin: .5rem 0 0; font-size: .8rem; }
 .state-legend .sw { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px; vertical-align: -1px; margin-right: .3rem; border: 2px solid; }
+.state-legend .sw[data-state="pending"] { border-color: var(--line); }
+.state-legend .sw[data-state="ready"] { border-color: var(--run); }
+.state-legend .sw[data-state="waiting_approval"] { border-color: var(--wait); }
+.state-legend .sw[data-state="completed"] { border-color: var(--ok); }
+.state-legend .sw[data-state="failed"] { border-color: var(--err); }
+.state-legend .sw[data-state="cancelled"] { border-color: var(--idle); border-style: dashed; }
 
 /* ── Цвета статусов (текст) ── */
 .st { font-weight: 600; }

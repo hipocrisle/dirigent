@@ -58,6 +58,14 @@
                aria-label="Граф шагов заказа"></svg>
         </div>
         <figcaption id="dag-note" class="muted"></figcaption>
+        <ul class="state-legend" aria-label="Легенда статусов">
+          <li><span class="sw" data-state="pending" aria-hidden="true"></span>ожидает</li>
+          <li><span class="sw" data-state="ready" aria-hidden="true"></span>готов/выполняется</li>
+          <li><span class="sw" data-state="waiting_approval" aria-hidden="true"></span>ждёт</li>
+          <li><span class="sw" data-state="completed" aria-hidden="true"></span>выполнен</li>
+          <li><span class="sw" data-state="failed" aria-hidden="true"></span>провален</li>
+          <li><span class="sw" data-state="cancelled" aria-hidden="true"></span>отменён</li>
+        </ul>
       </figure>
 
       <section class="inspector" aria-labelledby="insp-title">

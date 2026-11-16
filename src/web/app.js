@@ -90,7 +90,8 @@
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
-    });    if (!resp.ok) {
+    });
+    if (!resp.ok) {
       let detail = "";
       try {
         const body = await resp.json();
@@ -199,6 +200,7 @@
     view.selectedStep = null;
     els.detail.hidden = false;
     els.detailHint.textContent = "Загрузка заказа…";
+    delete els.detailHint.dataset.kind;
     highlightListSelection(oid);
     try {
       const order = await getJson(API + "/" + encodeURIComponent(oid));
