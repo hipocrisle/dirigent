@@ -20,7 +20,11 @@ class Executor(Protocol):
 
     async def run(self, step: StepSpec, workdir: str | None = None) -> StepResult:
         """Запуск до завершения (свой внутренний таймаут <= step.timeout_seconds).
-        Обязан вернуть StepResult; исключения ловит сам и возвращает unknown/runtime."""
+        Обязан вернуть StepResult; исключения ловит сам и возвращает unknown/runtime.
+
+        Правило результата: rc==0 с пустым stdout — НЕ успех, а runtime
+        («молчаливый успех» недопустим, фиксируется в интерфейсе, чтобы
+        реализации не расходились)."""
         ...
 
     async def status(self, run_id: str) -> StepResult | None:
