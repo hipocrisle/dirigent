@@ -67,6 +67,7 @@ def test_run_acceptance_unknown_checker(go_repo):
 
 
 def test_repo_changed_detects_noop(go_repo):
+    subprocess.run(["git", "init", "-q", go_repo])
     r = check_repo_changed(go_repo)
     assert not r.ok          # чистое дерево -> шаг ничего не сделал
     (Path(go_repo) / "x.go").write_text("package t\n")
