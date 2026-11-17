@@ -17,6 +17,24 @@ from .states import StepState
 
 DB_PATH = "/matrix/dirigent/dirigent.db"
 
+# P3a-2: статический read-only визуализатор. Только GET, никаких мутаций.
+WEB_DIR = Path(__file__).resolve().parent / "web"
+
+
+async def _index_redirect(_req) -> web.Response:
+    """Корень -> /ui/ (удобно открыть в браузере)."""
+    raise web.HTTPFound("/ui/")
+
+
+async def _ui_redirect(_req) -> web.Response:
+    """Без слэша -> со слэшем, чтобы относительные ссылки в index.html работали."""
+    raise web.HTTPFound("/ui/")
+
+
+async def _ui_index(_req) -> web.FileResponse:
+    """index.html как точка входа статического интерфейса."""
+    return web.FileResponse(WEB_DIR / "index.html")
+
 
 def _step_public(r) -> dict:
     out = {"id": r["id"], "state": r["state"], "type": r["type"],
@@ -166,6 +184,9 @@ def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Applica
     api = Api(db)
     sse = event_stream or EventStream(db)
     app = web.Application()
+    async def _ui_index(req):
+        return web.FileResponse("/matrix/dirigent/src/web/index.html")
+    app.router.add_get("/ui/", _ui_index)
     app.router.add_static("/ui/", path="/matrix/dirigent/src/web", show_index=True)
     # P3: версионированный API. Snapshot — через уже существующие REST endpoints
     # (/orders, /orders/{oid}, ...), SSE — только поток изменений из таблицы events.
@@ -184,6 +205,12 @@ def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Applica
     app.router.add_post("/orders/{oid}/resume", api.resume)
     app.router.add_post("/orders/{oid}/cancel", api.cancel)
     app.router.add_get("/stats", api.stats)
+    # P3a-2: статический read-only интерфейс (GET-only). Не влияет на API/SSE.
+    app.router.add_get("/", _index_redirect)
+    app.router.add_get("/ui", _ui_redirect)
+    app.router.add_get("/ui/", _ui_index)
+    app.router.add_static("/ui/", WEB_DIR, follow_symlinks=False,
+                          append_version=True)
     return app
 
 
