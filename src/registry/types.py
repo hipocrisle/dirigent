@@ -82,6 +82,7 @@ class Role(str, Enum):
     architecture = "architecture"  # сложная архитектура / проектирование
     review = "review"          # ревью чужого кода/диффа
     simple_test = "simple_test"  # дешёвые тесты/короткие проверки
+    cheap_test = "cheap_test"    # алиас simple_test (наименование из registry.py)
     generic = "generic"        # всё остальное без специфики
 
 

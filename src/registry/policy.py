@@ -21,6 +21,7 @@ ROLE_PREFERENCE: dict[Role, tuple[str, ...]] = {
     Role.review: ("codex", "opencode", "gemini"),
     Role.coding: ("opencode", "codex", "gemini"),
     Role.simple_test: ("gemini", "opencode", "codex"),
+    Role.cheap_test: ("gemini", "opencode", "codex"),
     Role.generic: ("opencode", "codex", "gemini"),
 }
 

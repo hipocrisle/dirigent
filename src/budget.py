@@ -21,7 +21,7 @@ DB = "/matrix/dirigent/dirigent.db"
 KEY_FILE = "/root/.config/deepseek.env"
 RESERVE_USD = 0.20          # ниже — платные исполнители молчат
 API = "https://api.deepseek.com/user/balance"
-_topped_up = 2.0            # пополнение 16.11; при новом — add_topup()
+_topped_up_default = 2.0    # пополнение 16.11
 _cache: tuple[float, float] | None = None
 
 
@@ -33,9 +33,25 @@ def _key() -> str:
         return ""
 
 
+def _topped_up() -> float:
+    try:
+        with sqlite3.connect(DB) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS budget_meta (k TEXT PRIMARY KEY, v REAL)")
+            row = c.execute("SELECT v FROM budget_meta WHERE k='topped_up'").fetchone()
+            if row:
+                return float(row[0])
+            c.execute("INSERT INTO budget_meta VALUES ('topped_up', ?)",
+                      (_topped_up_default,))
+            return _topped_up_default
+    except Exception:
+        return _topped_up_default
+
+
 def add_topup(usd: float) -> None:
-    global _topped_up
-    _topped_up += usd
+    new = _topped_up() + usd
+    with sqlite3.connect(DB) as c:
+        c.execute("CREATE TABLE IF NOT EXISTS budget_meta (k TEXT PRIMARY KEY, v REAL)")
+        c.execute("INSERT OR REPLACE INTO budget_meta VALUES ('topped_up', ?)", (new,))
 
 
 def balance() -> float | None:
@@ -66,7 +82,7 @@ def balance() -> float | None:
 def spent_total() -> float | None:
     if _cache is None and balance() is None:
         return None
-    return round(_topped_up - (_cache[1] if _cache else 0.0), 4)
+    return round(_topped_up() - (_cache[1] if _cache else 0.0), 4)
 
 
 def can_launch(tag: str) -> tuple[bool, str]:
@@ -86,7 +102,7 @@ def report() -> dict:
     return {
         "deepseek_balance_usd": bal if bal is not None else "unknown",
         "deepseek_spent_total_usd": spent_total(),
-        "topped_up_usd": _topped_up,
+        "topped_up_usd": _topped_up(),
         "daily_cap_usd": DAY_BUDGET_USD,
         "reserve_usd": RESERVE_USD,
         "codex_quota": "unknown",   # официального источника нет (AD-4)
