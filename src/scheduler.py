@@ -124,6 +124,24 @@ class Scheduler:
         if getattr(self, "_is_registry_step", None) and self._is_registry_step(spec):
             return await self._run_via_registry(oid, sid, spec, repo)
         tag = spec.type.split(".")[0]
+
+        # E1: бюджетный pre-flight (платные исполнители) и в базовом пути
+        if tag in ("opencode",):
+            from . import budget
+            ok_b, why_b = budget.can_launch(tag)
+            if not ok_b:
+                import time as _t
+                await self.db.transition_step(
+                    oid, sid, StepState.ready, force=True,
+                    lease_owner=None, lease_until=None,
+                    backoff_until=_t.time() + 120)
+                await self.db.transition_step(
+                    oid, sid, StepState.waiting_resource,
+                    lease_owner=None, lease_until=None,
+                    error_text=f"budget: {why_b}")
+                await self.db.event("step.budget_hold", oid, sid, {"why": why_b})
+                return
+
         ex = self.exec.get(tag)
         if ex is None:
             if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend missing")):

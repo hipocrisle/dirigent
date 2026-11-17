@@ -106,9 +106,9 @@ def test_auth_settings_inline_api_key(tmp_path):
 
 def test_available_requires_binary_and_auth(monkeypatch, tmp_path):
     monkeypatch.setattr(gemini.shutil, "which", lambda b: None)
-    assert _progon(GeminiExecutor(home=str(tmp_path), env={}).available()) is False
+    assert _progon(GeminiExecutor(home=str(tmp_path), env={"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}).available()) is False
     monkeypatch.setattr(gemini.shutil, "which", lambda b: "/usr/bin/gemini")
-    assert _progon(GeminiExecutor(home=str(tmp_path), env={}).available()) is False
+    assert _progon(GeminiExecutor(home=str(tmp_path), env={"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}).available()) is False
     assert _progon(GeminiExecutor(home=str(tmp_path),
                                   env={"GEMINI_API_KEY": "k"}).available()) is True
 

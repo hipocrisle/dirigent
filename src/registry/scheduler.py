@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from typing import Any
 
@@ -116,6 +117,19 @@ class RegistrySchedulerMixin:
             await db.event("step.waiting_resource", oid, sid,
                            {"tag": REGISTRY_TAGS_PREFIX, "role": role.value,
                             "probes": {k: v.to_dict() for k, v in probes.items()}})
+            return
+
+        # E1: бюджетный pre-flight для платных исполнителей (до probe/launch)
+        from .. import budget
+        ok_b, why_b = budget.can_launch(
+            "opencode")  # единственный платный сейчас; codex — подписка
+        if not ok_b:
+            await db.transition_step(oid, sid, StepState.ready, force=True,
+                                     lease_owner=None, lease_until=None,
+                                     backoff_until=time.time() + 120)
+            await db.transition_step(oid, sid, StepState.waiting_resource,
+                                     lease_owner=None, lease_until=None)
+            await db.event("step.budget_hold", oid, sid, {"why": why_b})
             return
 
         # worktree как у ядра для всех исполнителей, которые правят файлы

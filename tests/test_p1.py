@@ -166,3 +166,31 @@ async def test_retry_accounting_and_cap(db, sched):
         "SELECT COUNT(*) n FROM events WHERE order_id=? AND kind='step.retry_refused'",
         (oid,))
     assert (await cur2.fetchone())["n"] == 1
+
+
+async def test_budget_hold_blocks_paid_executor(db, sched, git_repo, monkeypatch):
+    """E1: баланс ниже резерва -> шаг уходит в waiting_resource (budget_hold)."""
+    from src import budget
+    monkeypatch.setattr(budget, "balance", lambda: 0.05)
+    monkeypatch.setattr(budget, "_cache", (budget.time.time(), 0.05))
+    oid = await submit(db, [{"id": "s1", "type": "opencode",
+                             "inputs": {"role": "coding"},
+                             "acceptance": {"checks": ["repo_changed"]}}],
+                       repo=git_repo)
+    await run_ticks(sched, 6, delay=0.15)
+    row = (await db.steps_of(oid))[0]
+    from src.states import StepState
+    assert StepState(row["state"]) == StepState.waiting_resource
+    assert "budget" in (row["error_text"] or "")
+
+
+async def test_budget_ok_allows(db, sched, git_repo, monkeypatch):
+    from src import budget
+    monkeypatch.setattr(budget, "_cache", (budget.time.time(), 1.5))
+    oid = await submit(db, [{"id": "s1", "type": "opencode",
+                             "inputs": {"role": "coding"},
+                             "acceptance": {"checks": ["repo_changed"]}}],
+                       repo=git_repo)
+    await run_ticks(sched, 4, delay=0.12)
+    row = (await db.steps_of(oid))[0]
+    assert "budget" not in (row["error_text"] or "")

@@ -410,6 +410,13 @@ async def create_test_order(goal: str, request_id: str) -> dict:
     return {"created": True, "duplicate": False, "order_id": oid, "sandbox": True}
 
 
+@server.tool()
+async def get_budget() -> dict:
+    """Деньги: фактический баланс/расход DeepSeek, лимиты, codex честно unknown."""
+    from . import budget
+    return _with_notices(budget.report())
+
+
 # ═══ MCP v2: наблюдаемость (READ) ═══════════════════════════
 
 @server.tool()
@@ -467,24 +474,45 @@ async def get_costs() -> dict:
 
 @server.tool()
 async def get_resource_status() -> dict:
-    """Исполнители и ресурсы: доступность codex/opencode/DE-1. Только чтение."""
+    """Исполнители и ресурсы: ФАКТЫ (probe), homepc (ssh), честные unknown."""
     import shutil
+    import subprocess
     from pathlib import Path
-    import json as _json
     codex_auth = Path.home() / ".codex" / "auth.json"
     opencode_cfg = Path("/root/.config/opencode/opencode.json")
+    homepc = "unknown"
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "homepc",
+             "echo UP; curl -s -o /dev/null -w '%{http_code}' --max-time 4 "
+             "http://127.0.0.1:11434/api/tags; "
+             "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader 2>/dev/null"],
+            capture_output=True, text=True, timeout=15)
+        if r.returncode == 0 and r.stdout.startswith("UP"):
+            parts = r.stdout.split()
+            homepc = {"online": True, "ollama": parts[1] if len(parts) > 1 else "?",
+                      "gpu_util": parts[2] if len(parts) > 2 else "?"}
+        else:
+            homepc = {"online": False}
+    except Exception:
+        homepc = {"online": False}
+    from .registry.gemini import auth_status as gem_auth
+    gem_ok, gem_why = gem_auth()
     _journal("get_resource_status", True)
-    return {
+    return _with_notices({
         "executors": {
             "codex": {"installed": bool(shutil.which("codex")),
-                      "auth": codex_auth.is_file()},
+                      "auth": codex_auth.is_file(), "quota": "unknown"},
             "opencode": {"installed": bool(shutil.which("opencode")),
                          "config": opencode_cfg.is_file()},
+            "gemini": {"installed": bool(shutil.which("gemini")),
+                       "authorized": gem_ok, "why": gem_why},
+            "kimi": {"installed": bool(shutil.which("kimi"))},
         },
-        "de1": {"role": "orchestrator host", "status": "ok"},
-        "homepc": "unknown",  # проверка по ssh — отдельный адаптер (медиа-фаза)
-        "note": "доступность ≠ свободная квота; квота Codex без probe — unknown",
-    }
+        "homepc": homepc,
+        "de1": {"cpu": 6, "note": "живой VPN-транзит, лимит 2 исполнителя"},
+        "note": "unknown != available; квота Codex без unofficial-probe неизмерима",
+    })
 
 
 # ═══ MCP v2: управление (CONTROL) ═══════════════════════════
