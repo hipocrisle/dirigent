@@ -15,7 +15,10 @@ import sqlite3
 import time
 import urllib.request
 
-from .policy import DAY_BUDGET_USD
+try:
+    from .policy import DAY_BUDGET_USD
+except ImportError:  # script-mode (systemd)
+    from policy import DAY_BUDGET_USD
 
 DB = "/matrix/dirigent/dirigent.db"
 KEY_FILE = "/root/.config/deepseek.env"
