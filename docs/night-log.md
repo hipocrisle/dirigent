@@ -5,3 +5,9 @@
 - Исправлено: check_pytest ищет .venv в родителях worktree; repo_changed = dirty ИЛИ коммиты поверх базы (agent-commit false negative устранён). 100/100 → деплой.
 - integrate (SSE P3a-1): 112/112, влито в dev, задеплоено, /api/v1/events жив на loopback.
 - Notice ChatGPT: причины провалов + инструкция P3a-2b.
+
+## Обход 03:23
+- ChatGPT ночью молчит (notices не читал, заказов нет). Критический путь взял на себя.
+- P3a-2 сделан Kimi напрямую: src/web/ (index, order, app.js, order.js, style.css), static /ui/ в api.py, тест на отдачу. 116/116.
+- integrate → dev задеплоено; /ui/ 200, /api/v1/events отдаёт text/event-stream.
+- Notice ChatGPT: P3a-2b не ставить; дальше P3a-3 приёмка или браузер после сброса лимитов Codex.
