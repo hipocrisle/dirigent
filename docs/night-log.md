@@ -34,3 +34,14 @@
 ## Обход 08:24 — тихо: зависших нет, сервисы active, ChatGPT молчит с 06:28 (владелец небуди).
 ## Обход 09:26 — тихо, сервисы active.
 ## Обход 10:26 — тихо, active.
+
+## День: интеграция работы ChatGPT
+- Его коммиты (93fc3d2 фронтенд SVG-DAG/safe-DOM + 4080026 строгий repo_changed) влиты в dev и задеплоены. Его repo_changed (контент-diff) заменил мою наивную версию — строже.
+- Мерж: add/add в src/web (взял его), helpers _git_out/_repo_base_refs/_commits_since/_EMPTY_TREE до-вставлены, /ui/ index-роут, тесты приведены. 140/140.
+- Notice ChatGPT: интеграция завершена, P3a-3 его ход.
+## Обход 11:33 — тихо. ChatGPT активен 11:31 (пробы). active.
+## P3a-3 (DeepSeek): доступ к /ui/ снаружи
+- Публичного URL для /ui/ нет: API только 127.0.0.1:9310, Quick Tunnel ведёт на MCP :9320 (/ui/ там 404, /mcp 401). Docker nginx — VPN-контур, Дирижёра не проксирует.
+- Добавлен опциональный read-only профиль build_app(public_ui_only=True) (только GET /ui + /orders,/stats,/approvals/open; мутации и SSE -> 403). Дефолт False, production не менялся. tests/test_ui_access.py (9 тестов).
+- docs/ui-access.md: карта, threat model, rollout-чек-лист, инструкция. Ждёт ревью Kimi; нужны Cloudflare Access + named tunnel + CLI-флаги инстанса :9311.
+- Прогон: 149/149 (с HOME/GOCACHE); без них 2 падения чекеров — окружение.

@@ -179,11 +179,41 @@ class Api:
         return web.json_response(await actions.stats(self.db))
 
 
-def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Application:
-    """event_stream=None — дефолтный SSE-поток; в тестах можно подставить лимиты."""
+# P3a-3: профиль для публикации /ui/ за аутентифицирующим прокси. Прокси
+# обязан проверять владельца (Cloudflare Access/IdP); приложение дополнительно
+# не отдаёт наружу мутации и SSE — только GET-чтение.
+PUBLIC_UI_SAFE_GET = frozenset({"/", "/ui", "/ui/", "/orders", "/stats",
+                                "/approvals/open"})
+# Мутации и SSE: /orders/{oid}/steps/{sid}/{retry,kill,diagnose},
+# /orders/{oid}/{pause,resume,cancel}, /approvals/{aid}/{approve,reject},
+# POST /orders, GET /api/v1/events — наружу через публичный профиль не идут.
+
+
+def _public_ui_guard_ok(req) -> bool:
+    if req.method not in ("GET", "HEAD"):
+        return False
+    if req.path in PUBLIC_UI_SAFE_GET:
+        return True
+    return req.path.startswith("/ui/")
+
+
+@web.middleware
+async def _public_ui_read_only(request, handler):
+    if not _public_ui_guard_ok(request):
+        return web.json_response({"error": "public_ui_read_only"}, status=403)
+    return await handler(request)
+
+
+def build_app(db: DB, *, event_stream: EventStream | None = None,
+              public_ui_only: bool = False) -> web.Application:
+    """event_stream=None — дефолтный SSE-поток; в тестах можно подставить лимиты.
+
+    public_ui_only=True — профиль для внешнего /ui/-доступа (за прокси с auth):
+    только GET-чтение UI/существующего REST, без мутаций и SSE.
+    """
     api = Api(db)
     sse = event_stream or EventStream(db)
-    app = web.Application()
+    app = web.Application(middlewares=[_public_ui_read_only] if public_ui_only else [])
     async def _ui_index(req):
         return web.FileResponse("/matrix/dirigent/src/web/index.html")
     app.router.add_get("/ui/", _ui_index)
