@@ -26,6 +26,8 @@ class Scheduler:
     def __init__(self, db: DB, max_parallel: int = 2,
                  executor_override: dict[str, object] | None = None):
         self.db = db
+        from .planning import Assignment
+        self.assignment = Assignment(db)
         self.max_parallel = max_parallel
         self.slots = asyncio.Semaphore(max_parallel)
         self.owner = f"sched-{uuid.uuid4().hex[:8]}"
@@ -60,6 +62,7 @@ class Scheduler:
 
     async def recover(self) -> None:
         """После перезапуска: вернуть зависшие шаги в очередь (спека §6.4)."""
+        await self.assignment.recover(all_running=True)
         await self.db.requeue_orphaned()
         requeued = await self.db.requeue_stale()
         for oid, sid, what in requeued:
@@ -101,22 +104,34 @@ class Scheduler:
                 pass
             except Exception as e:
                 log.exception("run %s/%s failed", oid, sid)
+                if await self.assignment.failed(oid, sid, StepResult(
+                        ok=False, error_class="network" if isinstance(e, OSError) else "unknown",
+                        error_text=f"scheduler: {e!r}")):
+                    return
                 await self.db.transition_step(
                     oid, sid, StepState.failed, error_class="unknown",
                     error_text=f"scheduler: {e!r}", lease_owner=None, lease_until=None)
 
     async def _run_inner(self, oid: str, sid: str) -> None:
+        if not await self.assignment.reserve(oid, sid):
+            return
         spec = await self.db.get_step_spec(oid, sid)
+        if await self.assignment.request(oid) is not None:
+            spec.prompt = f"Act as {spec.inputs['role']}.\n{spec.prompt}"
         repo = await self.db.get_order_repo(oid)
         tag = spec.type.split(".")[0]
         ex = self.exec.get(tag)
         if ex is None:
+            if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend missing")):
+                return
             await self.db.transition_step(
                 oid, sid, StepState.failed, error_class="unknown",
                 error_text=f"no executor for tag {tag}", lease_owner=None, lease_until=None)
             return
 
         if not await ex.available():
+            if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend offline")):
+                return
             await self.db.transition_step(
                 oid, sid, StepState.waiting_resource, lease_owner=None, lease_until=None)
             await self.db.event("step.waiting_resource", oid, sid, {"tag": tag})
@@ -134,9 +149,10 @@ class Scheduler:
                                     {"path": wt, "branch": wt_branch})
             except Exception as e:
                 await self.db.event("step.worktree_failed", oid, sid, {"err": str(e)[:200]})
-                await self.db.finish_step(oid, sid, StepResult(
-                    ok=False, error_class="runtime",
-                    error_text=f"worktree: {str(e)[:200]}"))
+                failure = StepResult(ok=False, error_class="runtime",
+                                     error_text=f"worktree: {str(e)[:200]}")
+                if not await self.assignment.failed(oid, sid, failure):
+                    await self.db.finish_step(oid, sid, failure)
                 return
 
         if spec.approval.mode == "before":
@@ -185,6 +201,8 @@ class Scheduler:
                 oid, sid,
                 f"Шаг {sid} выполнен. Принять результат? ({list(result.artifacts)})",
                 spec, artifacts=result.artifacts)
+            return
+        if not result.ok and await self.assignment.failed(oid, sid, result):
             return
         await self.db.finish_step(oid, sid, result)
 
@@ -294,6 +312,7 @@ class Scheduler:
                 log.exception("quota recheck failed for %s/%s", r["order_id"], r["id"])
 
     async def _reap_stale_leases(self) -> None:
+        await self.assignment.recover()
         for oid, sid, what in await self.db.requeue_stale():
             await self.db.event("step.lease_lost", oid, sid, {"action": what})
 
