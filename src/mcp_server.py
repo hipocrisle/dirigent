@@ -349,7 +349,10 @@ async def get_system_status() -> dict:
 
 
 def _with_notices(response: dict) -> dict:
-    from .notice import attach_notices
+    try:
+        from .notice import attach_notices
+    except ImportError:  # запуск как скрипт (systemd): src в sys.path[0]
+        from notice import attach_notices
     return attach_notices(response)
 
 
@@ -371,7 +374,10 @@ async def list_orders() -> list[dict]:
 
 
 def _pending_notes() -> list[dict]:
-    from .notice import pending, mark_read
+    try:
+        from .notice import pending, mark_read
+    except ImportError:
+        from notice import pending, mark_read
     notes = pending()
     if notes:
         mark_read([n["id"] for n in notes])
