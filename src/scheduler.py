@@ -42,6 +42,11 @@ class Scheduler:
         await self.recover()
         from .notify import sender_loop
         tg = asyncio.create_task(sender_loop(stop=self._stopped))
+        import os as _os
+        from . import supervisor as _sup
+        _sup.MODE = _os.environ.get("DIRIGENT_SUPERVISOR_MODE", "dry")
+        sup = asyncio.create_task(
+            _sup.loop(self.db, self, _sup.make_ask(self.exec), stop=self._stopped))
         while not self._stopped.is_set():
             try:
                 await self.tick()
