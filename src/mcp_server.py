@@ -499,7 +499,10 @@ async def get_resource_status() -> dict:
             homepc = {"online": False}
     except Exception:
         homepc = {"online": False}
-    from .registry.gemini import auth_status as gem_auth
+    try:
+        from .registry.gemini import auth_status as gem_auth
+    except ImportError:
+        from registry.gemini import auth_status as gem_auth
     gem_ok, gem_why = gem_auth()
     _journal("get_resource_status", True)
     return _with_notices({
