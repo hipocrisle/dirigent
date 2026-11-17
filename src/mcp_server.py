@@ -499,11 +499,22 @@ async def get_resource_status() -> dict:
             homepc = {"online": False}
     except Exception:
         homepc = {"online": False}
-    try:
-        from .registry.gemini import auth_status as gem_auth
-    except ImportError:
-        from registry.gemini import auth_status as gem_auth
-    gem_ok, gem_why = gem_auth()
+    def _gem_auth():
+        env_key = bool((os.environ.get("GEMINI_API_KEY") or "").strip()
+                       or (os.environ.get("GOOGLE_API_KEY") or "").strip())
+        if env_key:
+            return True, "env:GEMINI_API_KEY/GOOGLE_API_KEY"
+        st = Path.home() / ".gemini" / "settings.json"
+        if st.is_file():
+            try:
+                d = json.loads(st.read_text())
+                sec = d.get("security", {}).get("auth", {})
+                if sec.get("selectedType") and sec.get("apiKey"):
+                    return True, "settings.json:apiKey"
+            except Exception:
+                pass
+        return False, "no env key, no settings.json apiKey"
+    gem_ok, gem_why = _gem_auth()
     _journal("get_resource_status", True)
     return _with_notices({
         "executors": {
