@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 
@@ -25,6 +26,8 @@ class Scheduler:
     def __init__(self, db: DB, max_parallel: int = 2,
                  executor_override: dict[str, object] | None = None):
         self.db = db
+        from .planning import Assignment
+        self.assignment = Assignment(db)
         self.max_parallel = max_parallel
         self.slots = asyncio.Semaphore(max_parallel)
         self.owner = f"sched-{uuid.uuid4().hex[:8]}"
@@ -59,6 +62,7 @@ class Scheduler:
 
     async def recover(self) -> None:
         """После перезапуска: вернуть зависшие шаги в очередь (спека §6.4)."""
+        await self.assignment.recover(all_running=True)
         await self.db.requeue_orphaned()
         requeued = await self.db.requeue_stale()
         for oid, sid, what in requeued:
@@ -100,22 +104,34 @@ class Scheduler:
                 pass
             except Exception as e:
                 log.exception("run %s/%s failed", oid, sid)
+                if await self.assignment.failed(oid, sid, StepResult(
+                        ok=False, error_class="network" if isinstance(e, OSError) else "unknown",
+                        error_text=f"scheduler: {e!r}")):
+                    return
                 await self.db.transition_step(
                     oid, sid, StepState.failed, error_class="unknown",
                     error_text=f"scheduler: {e!r}", lease_owner=None, lease_until=None)
 
     async def _run_inner(self, oid: str, sid: str) -> None:
+        if not await self.assignment.reserve(oid, sid):
+            return
         spec = await self.db.get_step_spec(oid, sid)
+        if await self.assignment.request(oid) is not None:
+            spec.prompt = f"Act as {spec.inputs['role']}.\n{spec.prompt}"
         repo = await self.db.get_order_repo(oid)
         tag = spec.type.split(".")[0]
         ex = self.exec.get(tag)
         if ex is None:
+            if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend missing")):
+                return
             await self.db.transition_step(
                 oid, sid, StepState.failed, error_class="unknown",
                 error_text=f"no executor for tag {tag}", lease_owner=None, lease_until=None)
             return
 
         if not await ex.available():
+            if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend offline")):
+                return
             await self.db.transition_step(
                 oid, sid, StepState.waiting_resource, lease_owner=None, lease_until=None)
             await self.db.event("step.waiting_resource", oid, sid, {"tag": tag})
@@ -133,9 +149,10 @@ class Scheduler:
                                     {"path": wt, "branch": wt_branch})
             except Exception as e:
                 await self.db.event("step.worktree_failed", oid, sid, {"err": str(e)[:200]})
-                await self.db.finish_step(oid, sid, StepResult(
-                    ok=False, error_class="runtime",
-                    error_text=f"worktree: {str(e)[:200]}"))
+                failure = StepResult(ok=False, error_class="runtime",
+                                     error_text=f"worktree: {str(e)[:200]}")
+                if not await self.assignment.failed(oid, sid, failure):
+                    await self.db.finish_step(oid, sid, failure)
                 return
 
         if spec.approval.mode == "before":
@@ -183,7 +200,9 @@ class Scheduler:
             await self._open_approval(
                 oid, sid,
                 f"Шаг {sid} выполнен. Принять результат? ({list(result.artifacts)})",
-                spec)
+                spec, artifacts=result.artifacts)
+            return
+        if not result.ok and await self.assignment.failed(oid, sid, result):
             return
         await self.db.finish_step(oid, sid, result)
 
@@ -193,19 +212,29 @@ class Scheduler:
             await self.db.extend_lease(oid, sid, self.owner, LEASE_SECONDS)
 
     # ── апрувы (неблокирующие) ────────────────────────────────
-    async def _open_approval(self, oid: str, sid: str, question: str, spec) -> None:
+    async def _open_approval(self, oid: str, sid: str, question: str, spec,
+                             artifacts: dict | list | None = None) -> str | None:
+        """Создаёт апрув в журнале. Уведомление владельцу — только если есть
+        что решать (артефакты/действия) и заказ реальный (см. notify)."""
+        from . import notify
+        ttl = notify.effective_approval_ttl(spec.approval.timeout_seconds)
         aid = await self.db.create_approval(
-            oid, sid, question, spec.approval.default_action,
-            spec.approval.timeout_seconds)
+            oid, sid, question, spec.approval.default_action, ttl)
         await self.db.event("approval.asked", oid, sid,
                             {"approval": aid, "default": spec.approval.default_action})
-        from . import notify
+        if not notify.is_meaningful_approval(sid, artifacts, None):
+            # «Принять результат? ([])» без действий: апрув в журнале для
+            # аудита, но владельца не дёргаем (инцидент 17.11).
+            await self.db.event("approval.not_notified", oid, sid,
+                                {"approval": aid, "reason": "no_actionable_result"})
+            return aid
         notify.enqueue("approval.requested",
                        notify.KIND_TITLES["approval.requested"],
-                       f"Заказ: <code>{oid}</code>\nШаг: <code>{sid}</code>\n{question}\n"
-                       f"TTL: {int(spec.approval.timeout_seconds/60)} мин",
+                       question,
                        dedup_key=f"approval:{aid}",
-                       order_id=oid, step_id=sid, approval_id=aid)
+                       order_id=oid, step_id=sid, approval_id=aid,
+                       event_data_json=json.dumps({"approval": aid, "step": sid}))
+        return aid
 
     async def _ask_and_wait(self, oid: str, sid: str, question: str, spec) -> bool:
         """approval.mode=before: шаг уже в running; при отказе — cancelled."""
@@ -283,6 +312,7 @@ class Scheduler:
                 log.exception("quota recheck failed for %s/%s", r["order_id"], r["id"])
 
     async def _reap_stale_leases(self) -> None:
+        await self.assignment.recover()
         for oid, sid, what in await self.db.requeue_stale():
             await self.db.event("step.lease_lost", oid, sid, {"action": what})
 
@@ -297,24 +327,67 @@ class Scheduler:
                 await self.db.transition_order(oid, OrderState.active)
                 ostate = OrderState.active
             if prog["verdict"] == "all_done":
-                await self.db.transition_order(oid, OrderState.done)
+                moved = await self.db.transition_order(oid, OrderState.done)
                 await self.db.event("order.done", oid)
-                from . import notify
-                goal = (await (await self.db.conn.execute(
-                    "SELECT goal FROM orders WHERE id=?", (oid,))).fetchone())["goal"]
-                notify.enqueue("order.done", notify.KIND_TITLES["order.done"],
-                               f"Заказ: <code>{oid}</code>\n{goal[:200]}",
-                               dedup_key=f"order:{oid}:done", order_id=oid)
+                if moved:
+                    # уведомление только на НАСТОЯЩЕМ переходе в done,
+                    # не каждый тик (дубли ✅ 17.11)
+                    await self._notify_done(oid)
             elif prog["verdict"] in ("has_failed", "has_cancelled"):
-                await self.db.transition_order(oid, OrderState.error)
+                moved = await self.db.transition_order(oid, OrderState.error)
                 await self.db.event("order.error", oid, data=prog)
-                from . import notify
-                notify.enqueue("order.error", notify.KIND_TITLES["order.error"],
-                               f"Заказ: <code>{oid}</code>\n{prog}",
-                               dedup_key=f"order:{oid}:error", order_id=oid)
+                if moved:
+                    # критично только исчерпание попыток: упавший шаг с
+                    # остатком retry — это ещё не «заказ провалился»
+                    await self._notify_error(oid, prog)
             else:
                 cur2 = await self.db.conn.execute(
                     "SELECT COUNT(*) n FROM approvals WHERE order_id=? AND status='open'",
                     (oid,))
                 if (await cur2.fetchone())["n"] > 0:
                     await self.db.transition_order(oid, OrderState.waiting_human)
+
+    async def _last_event_json(self, oid: str, kind: str) -> str | None:
+        cur = await self.db.conn.execute(
+            "SELECT data_json FROM events WHERE order_id=? AND kind=?"
+            " ORDER BY seq DESC LIMIT 1", (oid, kind))
+        row = await cur.fetchone()
+        return row["data_json"] if row else None
+
+    async def _notify_done(self, oid: str) -> None:
+        from . import notify
+        row = (await (await self.db.conn.execute(
+            "SELECT goal FROM orders WHERE id=?", (oid,))).fetchone())
+        goal = (row["goal"] if row else "") or ""
+        notify.enqueue("order.done", notify.KIND_TITLES["order.done"],
+                       f"Заказ: <code>{oid}</code>\n{goal[:200]}",
+                       dedup_key=f"order:{oid}:done", order_id=oid,
+                       event_data_json=await self._last_event_json(oid, "order.done"))
+
+    async def _notify_error(self, oid: str, prog: dict) -> None:
+        from . import notify
+        from .models import ErrorClass
+        from .states import StepState
+        rows = await (await self.db.conn.execute(
+            "SELECT id, state, error_class, error_text, attempts, max_attempts"
+            " FROM steps WHERE order_id=?", (oid,))).fetchall()
+        fatal = [r for r in rows
+                 if r["state"] == StepState.failed.value
+                 and r["error_class"] != ErrorClass.ok.value]
+        if not fatal:
+            # отмена человеком/каскад от отмены — не критическая ошибка
+            return
+        exhausted = [r for r in fatal if r["attempts"] >= r["max_attempts"]]
+        if not exhausted:
+            return  # попытки ещё есть / ретраи запланированы
+        lines = []
+        for r in exhausted[:3]:
+            lines.append(f"Шаг <code>{r['id']}</code>: {r['error_class']}"
+                         f" ({r['attempts']}/{r['max_attempts']})"
+                         f" {(r['error_text'] or '')[:160]}")
+        notify.enqueue("order.error", notify.KIND_TITLES["order.error"],
+                       f"Заказ: <code>{oid}</code>\n" + "\n".join(lines),
+                       dedup_key=f"order:{oid}:error", order_id=oid,
+                       event_data_json=json.dumps(
+                           {r["id"]: [r["error_class"], r["attempts"]]
+                            for r in exhausted}, ensure_ascii=False))

@@ -349,7 +349,10 @@ async def get_system_status() -> dict:
 
 
 def _with_notices(response: dict) -> dict:
-    from .notice import attach_notices
+    try:
+        from .notice import attach_notices
+    except ImportError:  # запуск как скрипт (systemd): src в sys.path[0]
+        from notice import attach_notices
     return attach_notices(response)
 
 
@@ -362,8 +365,23 @@ async def list_orders() -> list[dict]:
     except Exception as e:
         _journal("list_orders", False)
         return [{"error": f"api_unreachable: {e}"}]
-    return [{"id": o["id"], "goal": o["goal"][:80], "state": o["state"],
-             "progress": o.get("progress", {})} for o in orders[:20]]
+    out = [{"id": o["id"], "goal": o["goal"][:80], "state": o["state"],
+            "progress": o.get("progress", {})} for o in orders[:20]]
+    notes = _pending_notes()
+    if notes:
+        out.append({"notices_from_kimi": notes})
+    return out
+
+
+def _pending_notes() -> list[dict]:
+    try:
+        from .notice import pending, mark_read
+    except ImportError:
+        from notice import pending, mark_read
+    notes = pending()
+    if notes:
+        mark_read([n["id"] for n in notes])
+    return notes
 
 
 @server.tool()

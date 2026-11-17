@@ -89,10 +89,11 @@ async def cmd_pause(args) -> None:
 
 async def cmd_api(args) -> None:
     from .api import serve
-    await serve(host=args.host, port=args.port, db_path=DB_PATH)
+    await serve(host=args.host, port=args.port, db_path=DB_PATH,
+                public_ui_only=args.public_ui_only)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dirigent")
     p.add_argument("--db", default=DB_PATH)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -121,8 +122,15 @@ def main() -> None:
     ap = sub.add_parser("api")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9310)
+    # Публикация /ui/ наружу — только вместе с аутентифицирующим прокси.
+    # Флаг включает read-only профиль: мутации и SSE приложения отдают 403.
+    ap.add_argument("--public-ui-only", action="store_true",
+                    help="read-only профиль для публикации /ui/ за прокси с auth")
+    return p
 
-    args = p.parse_args()
+
+def main() -> None:
+    args = build_parser().parse_args()
     globals()["DB_PATH"] = args.db
     asyncio.run(globals()[f"cmd_{args.cmd}"](args))
 

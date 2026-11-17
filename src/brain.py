@@ -68,6 +68,9 @@ class KimiBrain:
 
 def get_brain() -> Brain:
     which = os.environ.get("DIRIGENT_BRAIN", "static")
+    if which == "cli":
+        from .planning import CLIBrain
+        return CLIBrain()
     if which == "kimi":
         return KimiBrain()
     return StaticBrain()

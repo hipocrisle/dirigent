@@ -6,16 +6,35 @@ TUI подключается поверх этих же эндпоинтов (т
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from aiohttp import web
 
-from . import actions
+from . import actions, notify
 from .db import DB
 from .event_stream import EventStream
 from .states import StepState
 
 DB_PATH = "/matrix/dirigent/dirigent.db"
+
+# P3a-2: статический read-only визуализатор. Только GET, никаких мутаций.
+WEB_DIR = Path(__file__).resolve().parent / "web"
+
+
+async def _index_redirect(_req) -> web.Response:
+    """Корень -> /ui/ (удобно открыть в браузере)."""
+    raise web.HTTPFound("/ui/")
+
+
+async def _ui_redirect(_req) -> web.Response:
+    """Без слэша -> со слэшем, чтобы относительные ссылки в index.html работали."""
+    raise web.HTTPFound("/ui/")
+
+
+async def _ui_index(_req) -> web.FileResponse:
+    """index.html как точка входа статического интерфейса."""
+    return web.FileResponse(WEB_DIR / "index.html")
 
 
 def _step_public(r) -> dict:
@@ -73,6 +92,42 @@ class Api:
             " FROM approvals a JOIN orders o ON o.id = a.order_id"
             " WHERE a.status='open' ORDER BY a.created")
         return web.json_response([dict(r) for r in await cur.fetchall()])
+
+    async def _approval_decision(self, req, verdict: str) -> web.Response:
+        """Однократное решение с понятной причиной отказа (кнопки TG, /approve).
+
+        Ответ всегда JSON:
+          ok=True            — решение впервые применено;
+          state='expired'    — срок истёк, решение по умолчанию (кнопки мертвы);
+          state='approved'/'rejected' — уже решено ранее, повтор не применяется;
+          state='missing'    — апрува нет (404).
+        ok (принято ли действие над шагом) отделён от state (итог апрува).
+        """
+        aid = req.match_info["aid"]
+        row = await (await self.db.conn.execute(
+            "SELECT * FROM approvals WHERE id=?", (aid,))).fetchone()
+        if not row:
+            return web.json_response({"ok": False, "state": "missing",
+                                      "error": "approval not found"}, status=404)
+        base = {"order_id": row["order_id"], "step_id": row["step_id"]}
+        state = str(row["status"])
+        if state == "open" and row["expires_at"] is not None and \
+                float(row["expires_at"]) < time.time():
+            state = "expired"
+        if state != "open":
+            return web.json_response({"ok": False, "state": state, **base})
+        applied = await (actions.approve(self.db, aid) if verdict == "approve"
+                         else actions.reject(self.db, aid))
+        if not applied:
+            # гонка: параллельный клик забрал апрув первым
+            again = await (await self.db.conn.execute(
+                "SELECT status FROM approvals WHERE id=?", (aid,))).fetchone()
+            state = str(again["status"]) if again else "missing"
+            return web.json_response({"ok": False, "state": state, **base})
+        notify.mark_approval_decided(aid, verdict)
+        await notify.acknowledge_approval_cards(aid, verdict)
+        return web.json_response({"ok": True, "state": "approved" if verdict == "approve"
+                                  else "rejected", **base})
 
     async def create_order(self, req) -> web.Response:
         """MCP/ChatGPT: создание реального заказа. Allowlist + бюджет + idempotency."""
@@ -136,14 +191,10 @@ class Api:
         return web.json_response({"ok": ok, **result})
 
     async def approve(self, req) -> web.Response:
-        aid = req.match_info["aid"]
-        ok = await actions.approve(self.db, aid)
-        return web.json_response({"ok": ok})
+        return await self._approval_decision(req, "approve")
 
     async def reject(self, req) -> web.Response:
-        aid = req.match_info["aid"]
-        ok = await actions.reject(self.db, aid)
-        return web.json_response({"ok": ok})
+        return await self._approval_decision(req, "reject")
 
     async def pause(self, req) -> web.Response:
         ok = await actions.pause_order(self.db, req.match_info["oid"])
@@ -161,11 +212,44 @@ class Api:
         return web.json_response(await actions.stats(self.db))
 
 
-def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Application:
-    """event_stream=None — дефолтный SSE-поток; в тестах можно подставить лимиты."""
+# P3a-3: профиль для публикации /ui/ за аутентифицирующим прокси. Прокси
+# обязан проверять владельца (Cloudflare Access/IdP); приложение дополнительно
+# не отдаёт наружу мутации и SSE — только GET-чтение.
+PUBLIC_UI_SAFE_GET = frozenset({"/", "/ui", "/ui/", "/orders", "/stats",
+                                "/approvals/open"})
+# Мутации и SSE: /orders/{oid}/steps/{sid}/{retry,kill,diagnose},
+# /orders/{oid}/{pause,resume,cancel}, /approvals/{aid}/{approve,reject},
+# POST /orders, GET /api/v1/events — наружу через публичный профиль не идут.
+
+
+def _public_ui_guard_ok(req) -> bool:
+    if req.method not in ("GET", "HEAD"):
+        return False
+    if req.path in PUBLIC_UI_SAFE_GET:
+        return True
+    return req.path.startswith("/ui/")
+
+
+@web.middleware
+async def _public_ui_read_only(request, handler):
+    if not _public_ui_guard_ok(request):
+        return web.json_response({"error": "public_ui_read_only"}, status=403)
+    return await handler(request)
+
+
+def build_app(db: DB, *, event_stream: EventStream | None = None,
+              public_ui_only: bool = False) -> web.Application:
+    """event_stream=None — дефолтный SSE-поток; в тестах можно подставить лимиты.
+
+    public_ui_only=True — профиль для внешнего /ui/-доступа (за прокси с auth):
+    только GET-чтение UI/существующего REST, без мутаций и SSE.
+    """
     api = Api(db)
     sse = event_stream or EventStream(db)
-    app = web.Application()
+    app = web.Application(middlewares=[_public_ui_read_only] if public_ui_only else [])
+    async def _ui_index(req):
+        return web.FileResponse("/matrix/dirigent/src/web/index.html")
+    app.router.add_get("/ui/", _ui_index)
     app.router.add_static("/ui/", path="/matrix/dirigent/src/web", show_index=True)
     # P3: версионированный API. Snapshot — через уже существующие REST endpoints
     # (/orders, /orders/{oid}, ...), SSE — только поток изменений из таблицы events.
@@ -184,18 +268,29 @@ def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Applica
     app.router.add_post("/orders/{oid}/resume", api.resume)
     app.router.add_post("/orders/{oid}/cancel", api.cancel)
     app.router.add_get("/stats", api.stats)
+    # P3a-2: статический read-only интерфейс (GET-only). Не влияет на API/SSE.
+    app.router.add_get("/", _index_redirect)
+    app.router.add_get("/ui", _ui_redirect)
+    app.router.add_get("/ui/", _ui_index)
+    app.router.add_static("/ui/", WEB_DIR, follow_symlinks=False,
+                          append_version=True)
     return app
 
 
 async def serve(host: str = "127.0.0.1", port: int = 9310,
-                db_path: str = DB_PATH) -> None:
+                db_path: str = DB_PATH,
+                public_ui_only: bool = False) -> None:
+    """Запуск API. public_ui_only — отдельный read-only инстанс для публикации
+    /ui/ за аутентифицирующим прокси (не трогает боевой профиль на 9310)."""
     db = DB(Path(db_path))
     await db.open()
-    app = build_app(db)
+    app = build_app(db, public_ui_only=public_ui_only)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
     import logging
-    logging.getLogger("dirigent.api").info("API on http://%s:%s", host, port)
+    logging.getLogger("dirigent.api").info(
+        "API on http://%s:%s%s", host, port,
+        " (public_ui_only)" if public_ui_only else "")
     await __import__("asyncio").Event().wait()

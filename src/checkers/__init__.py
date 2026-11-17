@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -99,31 +100,146 @@ def check_pytest(workdir: str) -> CheckResult:
     return CheckResult(r.returncode == 0, tail)
 
 
-def check_repo_changed(workdir: str) -> CheckResult:
-    """Coding-шаг обязан что-то изменить: «модель сказала готово» без результата — провал.
+def _changed_paths(workdir: str, ref: str) -> list[str]:
+    """Файлы, реально отличающиеся от ref (закоммиченные + рабочее дерево).
 
-    Учитывает ОБА случая: незакоммиченные правки И коммиты агента поверх базы
-    (иначе false negative: агент закоммитил -> дерево чистое -> ложный провал).
+    Пустые коммиты (--allow-empty) изменением не считаются: сравнивается
+    содержимое деревьев, а не число коммитов.
     """
-    p = subprocess.run(["git", "-C", workdir, "status", "--porcelain"],
-                       capture_output=True, text=True, timeout=60)
-    if p.returncode != 0:
-        return CheckResult(False, "git status недоступен (не репо?)")
-    dirty = [l for l in p.stdout.splitlines() if l.strip()]
-    ahead = 0
-    for base in ("dirigent/integrate", "dev", "main"):
-        r = subprocess.run(["git", "-C", workdir, "rev-list", "--count",
-                            f"{base}..HEAD"],
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode == 0:
-            try:
-                ahead = int(r.stdout.strip())
-                break
-            except ValueError:
+    p = _git_out(workdir, "diff", "--name-only", ref, "--")
+    return [l for l in p.stdout.splitlines() if l.strip()]
+
+
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # git hash-object -t tree /dev/null
+
+
+def _git_out(workdir: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", workdir, *args],
+                          capture_output=True, text=True, timeout=60)
+
+
+def _repo_base_refs(workdir: str) -> tuple[list[str], str]:
+    """Референсы, относительно которых считается «база» работы шага.
+
+    Приоритет:
+    1. Маркер `.git/dirigent_base` — SHA вершины репозитория в момент
+       создания worktree шага; его пишет workspace.ensure_worktree, чтобы
+       база не «уезжала» при последующих коммитах в основную ветку.
+    2. worktree Дирижёра (dirigent/<oid>-<sid>): merge-base с основной
+       веткой репо и с dirigent/integrate.
+    3. Обычный репозиторий: точка ветвления текущей ветки от другой ветки
+       (merge-base), если такая есть.
+
+    База по SHA, предшествующая HEAD; без внешней базы возвращается [] и
+    работа считается «весь HEAD относительно пустого дерева».
+    """
+    base_refs: list[str] = []
+    branch = _git_out(workdir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    top = _git_out(workdir, "rev-parse", "--show-toplevel").stdout.strip()
+    if top:
+        marker = _git_out(workdir, "rev-parse", "--git-dir").stdout.strip()
+        mpath = Path(top if os.path.isabs(marker) else os.path.join(top, marker)) / "dirigent_base"
+        try:
+            sha = mpath.read_text().strip()
+        except OSError:
+            sha = ""
+        # маркер валиден, только если он предок HEAD: иначе он от другой работы
+        if sha and _git_out(workdir, "merge-base", "--is-ancestor", sha, "HEAD").returncode == 0:
+            base_refs.append(sha)
+            return base_refs, branch
+    if not branch or branch == "HEAD":
+        return base_refs, branch
+    if branch.startswith("dirigent/"):
+        cands = ["dirigent/integrate"]
+        cands += [c for c in os.environ.get("DIRIGENT_BASE_BRANCHES", "").split() if c] \
+            or ["main", "master"]
+        for cand in cands:
+            if cand == branch:
                 continue
-    if dirty or ahead > 0:
-        return CheckResult(True, f"изменений: {len(dirty)} dirty, {ahead} commits")
-    return CheckResult(False, "рабочее дерево чистое и коммитов нет")
+            if _git_out(workdir, "rev-parse", "--verify", "-q", cand).returncode != 0:
+                continue
+            mb = _git_out(workdir, "merge-base", branch, cand)
+            if mb.returncode == 0 and mb.stdout.strip():
+                sha = mb.stdout.strip()
+                if sha not in base_refs:
+                    base_refs.append(sha)
+        return base_refs, branch
+    # обычный репозиторий: база — точка ветвления от другой ветки (если есть)
+    others = [b.lstrip("* ").strip() for b in
+              _git_out(workdir, "branch", "--format=%(refname:short)").stdout.splitlines()]
+    for other in others:
+        other = other.strip()
+        if not other or other == branch:
+            continue
+        mb = _git_out(workdir, "merge-base", branch, other)
+        if mb.returncode == 0 and mb.stdout.strip():
+            sha = mb.stdout.strip()
+            if sha not in base_refs:
+                base_refs.append(sha)
+    return base_refs, branch
+
+
+
+def _commits_since(workdir: str, ref: str) -> list[str]:
+    p = _git_out(workdir, "rev-list", f"{ref}..HEAD")
+    return [l for l in p.stdout.splitlines() if l.strip()]
+
+
+
+def check_repo_changed(workdir: str) -> CheckResult:
+    """Coding-шаг обязан что-то изменить относительно базы.
+
+    Изменения определяются относительно базы шага — маркера `.git/dirigent_base`
+    (SHA в момент создания worktree) или merge-base с основной веткой /
+    dirigent/integrate — и включают и закоммиченные агентом правки, и
+    незакоммиченные. `git status --porcelain` в одиночку не критерий: агент
+    вправе сам закоммитить результат. Предсуществующие коммиты (в базе, в
+    основной ветке, чужие пустые коммиты) false positive не дают.
+    """
+    st = _git_out(workdir, "status", "--porcelain")
+    if st.returncode != 0:
+        return CheckResult(False, "git status недоступен (не репо?)")
+    uncommitted = [l for l in st.stdout.splitlines() if l.strip()]
+
+    head = _git_out(workdir, "rev-parse", "--verify", "-q", "HEAD")
+    if head.returncode != 0:
+        # репо без коммитов: любые файлы (staged/untracked) — уже изменение
+        return CheckResult(bool(uncommitted),
+                           f"изменений: {len(uncommitted)}" if uncommitted
+                           else "рабочее дерево чистое")
+
+    base_refs, _branch = _repo_base_refs(workdir)
+    if not base_refs:
+        # внешней базы нет: весь HEAD относительно пустого дерева
+        base_refs = [_EMPTY_TREE]
+    bases = [("<root>" if r == _EMPTY_TREE else r[:8]) for r in base_refs]
+
+    committed = _commits_since(workdir, base_refs[0])
+    changed = _changed_paths(workdir, base_refs[0])
+
+    total = len(changed)
+    if total:
+        parts = []
+        if committed:
+            parts.append(f"коммитов: {len(committed)}")
+        parts.append(f"файлов: {total}")
+        if uncommitted:
+            parts.append(f"незакоммиченных записей: {len(uncommitted)}")
+        return CheckResult(True, f"изменений: {total} ({', '.join(parts)}; база {','.join(bases)})")
+    if uncommitted:
+        # только новые неотслеживаемые файлы: diff против базы их не видит
+        untracked = [l for l in uncommitted if l.startswith("??")]
+        if untracked:
+            return CheckResult(True, f"изменений: {len(untracked)} "
+                                     f"(новых файлов: {len(untracked)}; база {','.join(bases)})")
+    if committed:
+        # коммиты есть, но итоговое содержимое совпадает с базой
+        # (пустые коммиты / правка с последующим откатом)
+        return CheckResult(False, f"изменений в дереве нет относительно базы "
+                                  f"{','.join(bases)} (коммитов без изменения итога: "
+                                  f"{len(committed)})")
+    return CheckResult(False, f"рабочее дерево чистое и нет коммитов относительно базы "
+                              f"{','.join(bases)}")
 
 
 def check_files_exist(workdir: str, expect: list[str]) -> CheckResult:

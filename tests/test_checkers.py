@@ -72,8 +72,9 @@ def test_repo_changed_detects_noop(go_repo):
     subprocess.run(["git", "-C", go_repo, "add", "-A"])
     subprocess.run(["git", "-C", go_repo, "-c", "user.email=t@t",
                     "-c", "user.name=t", "commit", "-qm", "base"])
+    subprocess.run(["git", "-C", go_repo, "branch", "dev"])  # база для чекера
     r = check_repo_changed(go_repo)
-    assert not r.ok          # чистое дерево -> шаг ничего не сделал
+    assert not r.ok          # чистое дерево, совпадает с базой -> шаг ничего не сделал
     (Path(go_repo) / "x.go").write_text("package t\n")
     r2 = check_repo_changed(go_repo)
     assert r2.ok
