@@ -32,31 +32,31 @@ async def test_real_probe_has_all_three_sources(real_reg):
     probs = probes.get("gemini")
     if probs is None:
         # gemini просто не установлен на этой машине — тогда его нет и в реестре
-        assert "gemini" not in real_reg.executors
+        assert "gemini" not in real_reg.probers
     else:
         assert probs.installed is True      # бинарь есть (--version 0.68.0)
 
 
 async def test_real_probe_fields_consistent(real_reg):
     for tag, pr in (await real_reg.probe_all()).items():
-        assert pr.executor == tag
+        assert pr.tag == tag
         # available строго следует из installed AND authenticated
-        assert pr.available == (pr.installed and pr.authenticated)
+        assert pr.available == (pr.installed and pr.authorized)
         # квота без факта запуска не может быть ok/exhausted
-        assert pr.quota_state in (QuotaState.unknown, QuotaState.ok,
-                                  QuotaState.exhausted)
-        assert pr.quota_used is None and pr.quota_limit is None
+        assert pr.quota_state in (QuotaState.unknown, QuotaState.known_ok,
+                                  QuotaState.known_exhausted)
+        assert getattr(pr, "quota_used", None) is None and getattr(pr, "quota_limit", None) is None
 
 
 async def test_real_codex_probe_matches_filesystem(real_reg):
     from src.executors import codex as codex_mod
-    pr = await real_reg.probe("codex")
+    pr = await real_reg.probers["codex"].probe()
     binary = codex_mod.shutil.which("codex")
     assert pr.installed == bool(binary)
     if pr.installed:
         import pathlib
         auth = pathlib.Path(codex_mod.pathlib.Path.home(), ".codex", "auth.json")
-        assert pr.authenticated == auth.is_file()
+        assert pr.authorized == auth.is_file()
 
 
 async def test_real_gemini_auth_not_fabricated(real_reg):
@@ -65,11 +65,11 @@ async def test_real_gemini_auth_not_fabricated(real_reg):
     Тест разрешает обе правды (подтверждён/не подтверждён), но требует, чтобы
     reason был явным и не выдавал файл-заглушку за авторизацию.
     """
-    if "gemini" not in real_reg.executors:
+    if "gemini" not in real_reg.probers:
         pytest.skip("gemini не установлен")
-    pr = await real_reg.probe("gemini")
-    if pr.installed and not pr.authenticated:
+    pr = await real_reg.probers["gemini"].probe()
+    if pr.installed and not pr.authorized:
         assert "smoke" in pr.notes or "подтвержд" in pr.notes
     # и реестр не считает его доступным без авторизации
     sel = await real_reg.select("cheap_test")
-    assert sel.executor != "gemini" or pr.authenticated
+    assert sel.executor != "gemini" or pr.authorized

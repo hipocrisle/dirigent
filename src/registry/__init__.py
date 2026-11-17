@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+from .audit import AuditLog
 from .core import (
     MAX_LAUNCHES,
     MAX_PARALLEL,

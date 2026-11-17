@@ -75,7 +75,7 @@ class ExecutorRegistry:
     """Реестр исполнителей + маршрутизатор. Один экземпляр на процесс демона."""
 
     def __init__(self, probers: dict | None = None, max_parallel: int | None = None,
-                 clock=time.time):
+                 clock=time.time, audit=None, probe_ttl: float | None = None):
         if probers is None:
             from .probes import CodexProber, GeminiProber, OpencodeProber
             probers = {
@@ -85,6 +85,8 @@ class ExecutorRegistry:
             }
         self.probers = dict(probers)
         self.max_parallel = max_parallel or MAX_PARALLEL
+        self._external_audit = audit          # опциональный AuditLog извне
+        self._probe_ttl = probe_ttl           # 0.0 — без кэша проб
         self._clock = clock
 
         # Последний снимок проб (кэшируется, чтобы select не дёргал проберы каждый раз).
@@ -120,6 +122,22 @@ class ExecutorRegistry:
                 out[tag] = res
         self._reports = out
         return dict(out)
+
+    async def probe_all(self, force: bool = False) -> dict[str, ProbeReport]:
+        """probe_all(force=...) — совместимость с registry-путём планировщика.
+
+        force=True всегда опрашивает заново; иначе отдаёт кэш, если он свежий
+        (probe_ttl; 0.0/None — без кэша, каждый раз опрашиваем).
+        """
+        ttl = self._probe_ttl
+        snap = getattr(self, "_reports", None)
+        if not force and snap:
+            if ttl is None:
+                return dict(snap)
+            newest = max(r.checked_at for r in snap.values()) if snap else 0.0
+            if ttl == 0.0 or (self._clock() - newest) < ttl:
+                return dict(snap)
+        return await self.probe()
 
     def snapshot(self) -> dict[str, ProbeReport]:
         """Последний известный снимок без новой пробы (может быть пустым)."""
