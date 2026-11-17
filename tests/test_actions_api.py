@@ -219,5 +219,8 @@ async def test_diagnose_endpoint(db, client):
 async def test_web_ui_served(db, client):
     r = await client.get("/ui/")
     assert r.status == 200
-    r2 = await client.get("/ui/order.html")
+    assert 'lang="ru"' in await r.text()
+    r2 = await client.get("/ui/app.js")
     assert r2.status == 200
+    r3 = await client.get("/ui/app.css")
+    assert r3.status == 200

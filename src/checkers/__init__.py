@@ -180,6 +180,12 @@ def _repo_base_refs(workdir: str) -> tuple[list[str], str]:
 
 
 
+def _commits_since(workdir: str, ref: str) -> list[str]:
+    p = _git_out(workdir, "rev-list", f"{ref}..HEAD")
+    return [l for l in p.stdout.splitlines() if l.strip()]
+
+
+
 def check_repo_changed(workdir: str) -> CheckResult:
     """Coding-шаг обязан что-то изменить относительно базы.
 
