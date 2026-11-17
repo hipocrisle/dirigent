@@ -108,6 +108,10 @@ class Scheduler:
     async def _run_inner(self, oid: str, sid: str) -> None:
         spec = await self.db.get_step_spec(oid, sid)
         repo = await self.db.get_order_repo(oid)
+        # Опциональный путь registry (см. src/registry/scheduler.py::RegistrySchedulerMixin).
+        # Базовая Scheduler метода не имеет -> поведение не меняется.
+        if getattr(self, "_is_registry_step", None) and self._is_registry_step(spec):
+            return await self._run_via_registry(oid, sid, spec, repo)
         tag = spec.type.split(".")[0]
         ex = self.exec.get(tag)
         if ex is None:
