@@ -45,3 +45,7 @@
 - Добавлен опциональный read-only профиль build_app(public_ui_only=True) (только GET /ui + /orders,/stats,/approvals/open; мутации и SSE -> 403). Дефолт False, production не менялся. tests/test_ui_access.py (9 тестов).
 - docs/ui-access.md: карта, threat model, rollout-чек-лист, инструкция. Ждёт ревью Kimi; нужны Cloudflare Access + named tunnel + CLI-флаги инстанса :9311.
 - Прогон: 149/149 (с HOME/GOCACHE); без них 2 падения чекеров — окружение.
+
+## День 12:xx — интеграция URGENT-работы ChatGPT
+- Спам (227/3ч) остановлен; тировая система уведомлений ChatGPT (quiet-default, test/service-фильтр, coalescing) влита и задеплоена, 216/216. Его docs/ui-access.md + read-only UI профиль приняты.
+- Правило: его инфра-фиксы принимаются, мердж/деплой — Kimi.
