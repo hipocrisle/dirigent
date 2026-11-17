@@ -102,3 +102,44 @@ async def test_public_profile_redirects_root_to_ui(read_only_client):
     r = await read_only_client.get("/", allow_redirects=False)
     assert r.status in (301, 302, 303, 307, 308)
     assert r.headers["Location"].rstrip("/").endswith("/ui")
+
+
+# ── 3. CLI: флаг --public-ui-only включает read-only профиль ─────────────
+
+def test_cli_parser_public_ui_flag_default_off():
+    """Без флага `api` остаётся боевым профилем (public_ui_only=False)."""
+    from src import cli
+
+    args = cli.build_parser().parse_args(["api"])
+    assert args.public_ui_only is False
+    assert args.host == "127.0.0.1"
+    assert args.port == 9310
+
+
+def test_cli_parser_public_ui_flag_on():
+    """`api --public-ui-only --port 9311` парсится и не слушает наружу."""
+    from src import cli
+
+    args = cli.build_parser().parse_args(
+        ["api", "--public-ui-only", "--port", "9311"])
+    assert args.public_ui_only is True
+    assert args.host == "127.0.0.1"
+    assert args.port == 9311
+
+
+async def test_cmd_api_propagates_public_ui_only(monkeypatch):
+    """cmd_api пробрасывает public_ui_only в serve() — только loopback."""
+    from src import cli
+    import src.api as api_mod
+
+    captured: dict = {}
+
+    async def fake_serve(*, host, port, db_path, public_ui_only=False):
+        captured.update(host=host, port=port, public_ui_only=public_ui_only)
+
+    monkeypatch.setattr(api_mod, "serve", fake_serve)
+    args = cli.build_parser().parse_args(
+        ["api", "--public-ui-only", "--port", "9311"])
+    await cli.cmd_api(args)
+    assert captured == {"host": "127.0.0.1", "port": 9311,
+                        "public_ui_only": True}

@@ -105,12 +105,22 @@ cd /matrix/dirigent
 .venv/bin/python -m pytest tests/ -q           # весь набор
 ```
 
-Результат прогона 17.11.2026: `tests/test_ui_access.py` — 9 passed.
-Полный набор — 138 passed, 2 failed **только** из-за окружения агента
-(в тесте нет `$HOME`, Go-чекер требует `GOCACHE`):
-`test_checkers.py::test_go_test_ok`, `test_checkers.py::test_run_acceptance_chain`.
-При `HOME=/root GOCACHE=/root/.cache/go-build GOPATH=/root/go` все 12 тестов
-`test_checkers.py` проходят. Это не регрессия от наших правок.
+Результат прогона 17.11.2026:
+- `tests/test_ui_access.py` — **12 passed** (10 контрактных + 2 на CLI-флаг `--public-ui-only`).
+- Полный набор `tests/` (`HOME=/root GOCACHE=… GOPATH=…`) — **152 passed, 0 failed**.
+  Ранее «2 failed» были только из-за окружения агента (нет `$HOME`/`GOCACHE`);
+  с заданным окружением Go-чекеры проходят. Регрессий от правок нет.
+
+Реализовано в этом шаге (без изменения production):
+- `src/api.py`: `serve(..., public_ui_only=False)` — параметр для отдельного
+  read-only инстанса; по умолчанию боевой профиль не меняется.
+- `src/cli.py`: `dirigent api --public-ui-only` (+ вынесен `build_parser()`),
+  флаг по умолчанию `False`, слушает `127.0.0.1`.
+- `tests/test_ui_access.py`: 3 теста на CLI (парсинг флага, default off,
+  проброс в `serve()`); все проходят без поднятия туннеля.
+
+> **Статус производства не тронут.** Боевой инстанс на `:9310` и Quick Tunnel
+> (`→ :9320`) не перезапускались; публичный ingress не применялся.
 
 ---
 
@@ -219,11 +229,11 @@ production не меняется, `/ui/` остаётся локальным.
 ## 7. Что осталось для запуска
 
 1. ✅ (сделано) безопасный профиль приложения + тесты, без изменения production.
-2. ⏳ Kimi: ревью `src/api.py` middleware и `docs/ui-access.md`.
-3. ⏳ Kimi/исполнитель: добавить CLI-флаги `--public-ui-only` / `--port` в
-   `src.cli` (отдельный инстанс на `:9311`), тест запуска.
+2. ✅ (сделано) CLI-флаги `--public-ui-only` / `--port` в `src.cli` (отдельный
+   инстанс на `:9311`), тесты парсинга/проброса — `tests/test_ui_access.py`.
+3. ⏳ Kimi: ревью `src/api.py` middleware, `src/cli.py` и `docs/ui-access.md`.
 4. ⏳ Владелец: аккаунт Cloudflare (домен уже есть), named-tunnel, токен в vault,
    Access-политика для `dash.<домен>`.
 5. ⏳ Оператор: проброс туннеля + чек-лист раздела 5, затем финальный URL в отчёте.
 
-Без пунктов 3–4 публичного URL нет.
+Без пунктов 4–5 публичного URL нет. До ревью Kimi (п.3) ingress не включать.

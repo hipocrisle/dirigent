@@ -8,10 +8,11 @@ import pytest
 
 @pytest.fixture
 def notify(tmp_path, monkeypatch):
-    monkeypatch.setattr(os.environ, "get", os.environ.get)
+    monkeypatch.setenv("DIRIGENT_TG_MODE", "verbose")
     m = importlib.import_module("src.notify")
     m = importlib.reload(m)
     monkeypatch.setattr(m, "JOURNAL_DB", str(tmp_path / "n.db"))
+    m.MODE = "verbose"
     return m
 
 

@@ -245,14 +245,19 @@ def build_app(db: DB, *, event_stream: EventStream | None = None,
 
 
 async def serve(host: str = "127.0.0.1", port: int = 9310,
-                db_path: str = DB_PATH) -> None:
+                db_path: str = DB_PATH,
+                public_ui_only: bool = False) -> None:
+    """Запуск API. public_ui_only — отдельный read-only инстанс для публикации
+    /ui/ за аутентифицирующим прокси (не трогает боевой профиль на 9310)."""
     db = DB(Path(db_path))
     await db.open()
-    app = build_app(db)
+    app = build_app(db, public_ui_only=public_ui_only)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
     import logging
-    logging.getLogger("dirigent.api").info("API on http://%s:%s", host, port)
+    logging.getLogger("dirigent.api").info(
+        "API on http://%s:%s%s", host, port,
+        " (public_ui_only)" if public_ui_only else "")
     await __import__("asyncio").Event().wait()

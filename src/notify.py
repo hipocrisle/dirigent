@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 import urllib.parse
@@ -24,7 +25,7 @@ MODES = {
     "verbose": {"approval.requested", "order.error", "order.done",
                 "step.retry_refused", "order.paused", "order.resumed"},
 }
-MODE = "verbose"
+MODE = os.environ.get("DIRIGENT_TG_MODE", "quiet")
 
 KIND_TITLES = {
     "approval.requested": "🙅 Требуется решение",
@@ -52,11 +53,25 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
+HOURLY_CAP = 10  # анти-спам: не более N уведомлений в час, остальные отбрасываются
+
+
+def _hour_count() -> int:
+    try:
+        with _conn() as c:
+            return c.execute("SELECT COUNT(*) FROM notifications"
+                             " WHERE created > ?", (time.time() - 3600,)).fetchone()[0]
+    except Exception:
+        return HOURLY_CAP  # при сомнениях — молчим
+
+
 def enqueue(kind: str, title: str, body: str, dedup_key: str,
             order_id: str | None = None, step_id: str | None = None,
             approval_id: str | None = None) -> bool:
-    """Идемпотентно. False — дубль или режим фильтрует."""
+    """Идемпотентно. False — дубль, режим фильтрует или сработал анти-спам-кэп."""
     if kind not in MODES.get(MODE, MODES["verbose"]):
+        return False
+    if kind != "approval.requested" and _hour_count() >= HOURLY_CAP:
         return False
     try:
         with _conn() as c:
