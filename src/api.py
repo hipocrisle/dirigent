@@ -6,11 +6,12 @@ TUI подключается поверх этих же эндпоинтов (т
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from aiohttp import web
 
-from . import actions
+from . import actions, notify
 from .db import DB
 from .event_stream import EventStream
 from .states import StepState
@@ -92,6 +93,42 @@ class Api:
             " WHERE a.status='open' ORDER BY a.created")
         return web.json_response([dict(r) for r in await cur.fetchall()])
 
+    async def _approval_decision(self, req, verdict: str) -> web.Response:
+        """Однократное решение с понятной причиной отказа (кнопки TG, /approve).
+
+        Ответ всегда JSON:
+          ok=True            — решение впервые применено;
+          state='expired'    — срок истёк, решение по умолчанию (кнопки мертвы);
+          state='approved'/'rejected' — уже решено ранее, повтор не применяется;
+          state='missing'    — апрува нет (404).
+        ok (принято ли действие над шагом) отделён от state (итог апрува).
+        """
+        aid = req.match_info["aid"]
+        row = await (await self.db.conn.execute(
+            "SELECT * FROM approvals WHERE id=?", (aid,))).fetchone()
+        if not row:
+            return web.json_response({"ok": False, "state": "missing",
+                                      "error": "approval not found"}, status=404)
+        base = {"order_id": row["order_id"], "step_id": row["step_id"]}
+        state = str(row["status"])
+        if state == "open" and row["expires_at"] is not None and \
+                float(row["expires_at"]) < time.time():
+            state = "expired"
+        if state != "open":
+            return web.json_response({"ok": False, "state": state, **base})
+        applied = await (actions.approve(self.db, aid) if verdict == "approve"
+                         else actions.reject(self.db, aid))
+        if not applied:
+            # гонка: параллельный клик забрал апрув первым
+            again = await (await self.db.conn.execute(
+                "SELECT status FROM approvals WHERE id=?", (aid,))).fetchone()
+            state = str(again["status"]) if again else "missing"
+            return web.json_response({"ok": False, "state": state, **base})
+        notify.mark_approval_decided(aid, verdict)
+        await notify.acknowledge_approval_cards(aid, verdict)
+        return web.json_response({"ok": True, "state": "approved" if verdict == "approve"
+                                  else "rejected", **base})
+
     async def create_order(self, req) -> web.Response:
         """MCP/ChatGPT: создание реального заказа. Allowlist + бюджет + idempotency."""
         from .models import OrderSpec
@@ -154,14 +191,10 @@ class Api:
         return web.json_response({"ok": ok, **result})
 
     async def approve(self, req) -> web.Response:
-        aid = req.match_info["aid"]
-        ok = await actions.approve(self.db, aid)
-        return web.json_response({"ok": ok})
+        return await self._approval_decision(req, "approve")
 
     async def reject(self, req) -> web.Response:
-        aid = req.match_info["aid"]
-        ok = await actions.reject(self.db, aid)
-        return web.json_response({"ok": ok})
+        return await self._approval_decision(req, "reject")
 
     async def pause(self, req) -> web.Response:
         ok = await actions.pause_order(self.db, req.match_info["oid"])
