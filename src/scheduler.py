@@ -121,12 +121,13 @@ class Scheduler:
         if not await self.assignment.reserve(oid, sid):
             return
         spec = await self.db.get_step_spec(oid, sid)
-        if await self.assignment.request(oid) is not None:
+        planned = await self.assignment.request(oid) is not None
+        if planned:
             spec.prompt = f"Act as {spec.inputs['role']}.\n{spec.prompt}"
         repo = await self.db.get_order_repo(oid)
         # Опциональный путь registry (см. src/registry/scheduler.py::RegistrySchedulerMixin).
         # Базовая Scheduler метода не имеет -> поведение не меняется.
-        if getattr(self, "_is_registry_step", None) and self._is_registry_step(spec):
+        if not planned and getattr(self, "_is_registry_step", None) and self._is_registry_step(spec):
             return await self._run_via_registry(oid, sid, spec, repo)
         tag = spec.type.split(".")[0]
 
@@ -148,6 +149,8 @@ class Scheduler:
                 return
 
         ex = self.exec.get(tag)
+        if planned and getattr(self, "_select_planned_executor", None):
+            ex = await self._select_planned_executor(oid, sid, spec)
         if ex is None:
             if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend missing")):
                 return

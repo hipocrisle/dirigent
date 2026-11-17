@@ -65,6 +65,23 @@ class RegistrySchedulerMixin:
 
     registry: ExecutorRegistry | None = None
 
+    async def _select_planned_executor(self, oid, sid, spec):
+        # M1 owns durable attempts, debits, recovery and execution. Use the
+        # public selection-only registry, never the legacy multi-launch loop.
+        from . import ExecutorRegistry as SelectionRegistry, Role as PlanningRole
+        reg = getattr(self, "_planning_registry_obj", None)
+        if reg is None:
+            reg = self._planning_registry_obj = SelectionRegistry()
+        roles = {"architect": PlanningRole.architecture,
+                 "coder": PlanningRole.coding, "tester": PlanningRole.cheap_test,
+                 "reviewer": PlanningRole.review}
+        tag = spec.type.split(".")[0]
+        selection = await reg.select(
+            roles[spec.inputs['role']], policy={"preference": [tag]},
+            refresh=True)
+        await self.db.event("planning.selection", oid, sid, selection.as_audit())
+        return self.exec.get(selection.tag) if selection.tag == tag else None
+
     def _get_registry(self) -> ExecutorRegistry:
         reg = getattr(self, "_registry_obj", None)
         if reg is None:
@@ -226,3 +243,7 @@ class RegistryScheduler(RegistrySchedulerMixin, Scheduler):
     Не используется демоном, пока Kimi не переключит `cli.py`/`api.py`;
     сохранена, чтобы интеграция была одной строкой.
     """
+
+    def __init__(self, *args, planning_registry=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._planning_registry_obj = planning_registry
