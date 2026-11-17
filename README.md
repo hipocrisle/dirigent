@@ -46,6 +46,15 @@ python3 -m venv .venv && .venv/bin/pip install pydantic aiosqlite pyyaml pytest 
 .venv/bin/python -m src.cli status <order_id>
 ```
 
+### Веб-визуализатор (read-only, P3a-2)
+
+Статический интерфейс под `src/web/` (HTML/CSS/vanilla JS, без сборки) раздаётся
+демоном API на `http://127.0.0.1:9310/ui/` (корень перенаправляет туда).
+Только `GET` к существующему REST (`/orders`, `/orders/{oid}`), без мутаций и SSE.
+Показывает список заказов, деталку с DAG шагов и инспектор узла.
+`prompt` и `depends_on` бэкенд пока не отдаёт — интерфейс показывает честную
+заглушку «Недоступно через REST API».
+
 ## Статус
 
 Активная разработка (ноябрь 2026). Готово: ядро (WP-1), чекеры приёмки (WP-3),
