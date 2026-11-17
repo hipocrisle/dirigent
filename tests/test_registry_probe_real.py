@@ -72,4 +72,4 @@ async def test_real_gemini_auth_not_fabricated(real_reg):
         assert "smoke" in pr.notes or "подтвержд" in pr.notes
     # и реестр не считает его доступным без авторизации
     sel = await real_reg.select("cheap_test")
-    assert sel.executor != "gemini" or pr.authorized
+    assert sel.tag != "gemini" or pr.authorized
