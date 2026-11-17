@@ -4,3 +4,4 @@ __pycache__/
 dirigent.db*
 /tmp/
 worktrees/
+mcp_oauth.db

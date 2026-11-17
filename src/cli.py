@@ -31,7 +31,8 @@ async def cmd_daemon(args) -> None:
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     db = DB(DB_PATH)
     await db.open()
-    sched = Scheduler(db, max_parallel=args.parallel)
+    from .registry.scheduler import RegistryScheduler
+    sched = RegistryScheduler(db, max_parallel=args.parallel)
     try:
         await sched.run_forever(tick=1.0)
     except (KeyboardInterrupt, asyncio.CancelledError):

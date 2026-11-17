@@ -268,6 +268,7 @@ def build_app(db: DB, *, event_stream: EventStream | None = None,
     app.router.add_post("/orders/{oid}/resume", api.resume)
     app.router.add_post("/orders/{oid}/cancel", api.cancel)
     app.router.add_get("/stats", api.stats)
+    app.router.add_get("/budget", budget_endpoint)
     # P3a-2: статический read-only интерфейс (GET-only). Не влияет на API/SSE.
     app.router.add_get("/", _index_redirect)
     app.router.add_get("/ui", _ui_redirect)
@@ -294,3 +295,8 @@ async def serve(host: str = "127.0.0.1", port: int = 9310,
         "API on http://%s:%s%s", host, port,
         " (public_ui_only)" if public_ui_only else "")
     await __import__("asyncio").Event().wait()
+
+
+async def budget_endpoint(req) -> web.Response:
+    from .budget import report
+    return web.json_response(report())

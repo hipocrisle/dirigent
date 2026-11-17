@@ -42,6 +42,11 @@ class Scheduler:
         await self.recover()
         from .notify import sender_loop
         tg = asyncio.create_task(sender_loop(stop=self._stopped))
+        import os as _os
+        from . import supervisor as _sup
+        _sup.MODE = _os.environ.get("DIRIGENT_SUPERVISOR_MODE", "dry")
+        sup = asyncio.create_task(
+            _sup.loop(self.db, self, _sup.make_ask(self.exec), stop=self._stopped))
         while not self._stopped.is_set():
             try:
                 await self.tick()
@@ -119,7 +124,29 @@ class Scheduler:
         if await self.assignment.request(oid) is not None:
             spec.prompt = f"Act as {spec.inputs['role']}.\n{spec.prompt}"
         repo = await self.db.get_order_repo(oid)
+        # Опциональный путь registry (см. src/registry/scheduler.py::RegistrySchedulerMixin).
+        # Базовая Scheduler метода не имеет -> поведение не меняется.
+        if getattr(self, "_is_registry_step", None) and self._is_registry_step(spec):
+            return await self._run_via_registry(oid, sid, spec, repo)
         tag = spec.type.split(".")[0]
+
+        # E1: бюджетный pre-flight (платные исполнители) и в базовом пути
+        if tag in ("opencode",):
+            from . import budget
+            ok_b, why_b = budget.can_launch(tag)
+            if not ok_b:
+                import time as _t
+                await self.db.transition_step(
+                    oid, sid, StepState.ready, force=True,
+                    lease_owner=None, lease_until=None,
+                    backoff_until=_t.time() + 120)
+                await self.db.transition_step(
+                    oid, sid, StepState.waiting_resource,
+                    lease_owner=None, lease_until=None,
+                    error_text=f"budget: {why_b}")
+                await self.db.event("step.budget_hold", oid, sid, {"why": why_b})
+                return
+
         ex = self.exec.get(tag)
         if ex is None:
             if await self.assignment.failed(oid, sid, StepResult(ok=False, error_class="resource", error_text="backend missing")):
