@@ -5,17 +5,34 @@
 """
 from __future__ import annotations
 
+import time
+
 from .db import DB
 from .states import OrderState, StepState
 
 
-async def approve(db: DB, aid: str) -> bool:
+async def _claim_approval(db: DB, aid: str, status: str) -> dict | None:
+    """Атомарно забирает открытый апрув (claim) -> строка | None.
+
+    Ровно один претендент переводит status open -> approved/rejected; второй
+    клик (или параллельный /approve из бота/CLI) получает None и не применяет
+    решение повторно (инцидент «двойное approve/reject» 17.11).
+    """
+    cur = await db.conn.execute(
+        "UPDATE approvals SET status=?, resolved=? WHERE id=? AND status='open'",
+        (status, time.time(), aid))
+    await db.conn.commit()
+    if cur.rowcount != 1:
+        return None
     cur = await db.conn.execute("SELECT * FROM approvals WHERE id=?", (aid,))
-    row = await cur.fetchone()
-    if not row or row["status"] != "open":
+    return await cur.fetchone()
+
+
+async def approve(db: DB, aid: str) -> bool:
+    row = await _claim_approval(db, aid, "approved")
+    if not row:
         return False
     oid, sid = row["order_id"], row["step_id"]
-    await db.resolve_approval(aid, "approved")
     spec = await db.get_step_spec(oid, sid)
     cur2 = await db.conn.execute(
         "SELECT state FROM steps WHERE order_id=? AND id=?", (oid, sid))
@@ -31,11 +48,9 @@ async def approve(db: DB, aid: str) -> bool:
 
 
 async def reject(db: DB, aid: str) -> bool:
-    cur = await db.conn.execute("SELECT * FROM approvals WHERE id=?", (aid,))
-    row = await cur.fetchone()
-    if not row or row["status"] != "open":
+    row = await _claim_approval(db, aid, "rejected")
+    if not row:
         return False
-    await db.resolve_approval(row["id"], "rejected")
     ok = await db.transition_step(row["order_id"], row["step_id"], StepState.cancelled,
                                   error_text="rejected by human")
     await db.event("approval.rejected", row["order_id"], row["step_id"],
@@ -53,25 +68,21 @@ async def cancel_order(db: DB, oid: str) -> bool:
 
 
 async def pause_order(db: DB, oid: str) -> bool:
-    """Пауза: running шаги дорабатывают до конца, новые не запускаются."""
+    """Пауза: running шаги дорабатывают до конца, новые не запускаются.
+
+    В Telegram НЕ уходит: это обычный переход, видимый в UI/аудите (events).
+    """
     ok = await db.transition_order(oid, OrderState.paused)
     if ok:
         await db.event("order.paused", oid)
-        from . import notify
-        notify.enqueue("order.paused", notify.KIND_TITLES["order.paused"],
-                       f"Заказ: <code>{oid}</code>",
-                       dedup_key=f"order:{oid}:paused", order_id=oid)
     return ok
 
 
 async def resume_order(db: DB, oid: str) -> bool:
+    """Продолжение после паузы. Тоже UI/аудит, без Telegram (P4 quiet)."""
     ok = await db.transition_order(oid, OrderState.active)
     if ok:
         await db.event("order.resumed", oid)
-        from . import notify
-        notify.enqueue("order.resumed", notify.KIND_TITLES["order.resumed"],
-                       f"Заказ: <code>{oid}</code>",
-                       dedup_key=f"order:{oid}:resumed", order_id=oid)
     return ok
 
 
