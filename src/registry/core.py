@@ -271,9 +271,6 @@ class ExecutorRegistry:
             if missing:
                 rejected.append({"tag": tag, "why": f"нет возможностей: {', '.join(missing)}"})
                 continue
-            if role in (Role.architecture, Role.review) and tag == "gemini":
-                # Gemini допустим только там, где не нужна кодинг-правка
-                pass
             chosen = tag
             break
 
