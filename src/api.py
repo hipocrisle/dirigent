@@ -166,6 +166,7 @@ def build_app(db: DB, *, event_stream: EventStream | None = None) -> web.Applica
     api = Api(db)
     sse = event_stream or EventStream(db)
     app = web.Application()
+    app.router.add_static("/ui/", path="/matrix/dirigent/src/web", show_index=True)
     # P3: версионированный API. Snapshot — через уже существующие REST endpoints
     # (/orders, /orders/{oid}, ...), SSE — только поток изменений из таблицы events.
     app.router.add_get("/api/v1/events", sse)

@@ -337,7 +337,7 @@ async def get_system_status() -> dict:
     except Exception:
         s, api_ok = {}, False
     _journal("get_system_status", True)
-    return {
+    return _with_notices({
         "service": "dirigent", "version": VERSION, "api_reachable": api_ok,
         "orders_done": s.get("orders_done"),
         "tasks_running": s.get("tasks_running"),
@@ -345,7 +345,12 @@ async def get_system_status() -> dict:
         "tasks_waiting": s.get("tasks_waiting"),
         "spent_usd": s.get("spent_usd", "unknown"),
         "codex_quota": s.get("codex_quota", "unknown"),
-    }
+    })
+
+
+def _with_notices(response: dict) -> dict:
+    from .notice import attach_notices
+    return attach_notices(response)
 
 
 @server.tool()
@@ -400,9 +405,9 @@ async def get_order(order_id: str) -> dict:
         return {"error": str(e)[:200]}
     if isinstance(d, dict) and d.get("error"):
         return {"error": "not found"}
-    return {"id": d["id"], "goal": d["goal"], "state": d["state"],
-            "repo": d.get("repo"), "steps": d["steps"],
-            "open_approvals": d["open_approvals"]}
+    return _with_notices({"id": d["id"], "goal": d["goal"], "state": d["state"],
+                          "repo": d.get("repo"), "steps": d["steps"],
+                          "open_approvals": d["open_approvals"]})
 
 
 @server.tool()

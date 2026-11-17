@@ -131,7 +131,7 @@ async def test_api_create_order_allowlist(db, client):
 
 async def test_api_create_order_repo_denied(db, client):
     r = await client.post("/orders", json={"request_id": "x", "order": {
-        "goal": "t", "repo": "/matrix/nexusbro",
+        "goal": "t", "repo": "/matrix/secrets",
         "steps": [{"id": "s1", "type": "mock.ok"}]}})
     assert r.status == 403
 
@@ -214,3 +214,10 @@ async def test_diagnose_endpoint(db, client):
     d = await r.json()
     assert d["worktree_exists"] in (True, False)
     assert isinstance(d["processes"], list)
+
+
+async def test_web_ui_served(db, client):
+    r = await client.get("/ui/")
+    assert r.status == 200
+    r2 = await client.get("/ui/order.html")
+    assert r2.status == 200

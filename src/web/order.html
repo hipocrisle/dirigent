@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dirigent — заказ</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <h1>🎩 Dirigent · <code id="oid"></code></h1>
+  <div id="conn" class="conn">соединение…</div>
+  <nav><a href="/ui/">← все заказы</a></nav>
+</header>
+<main class="split">
+  <section>
+    <h2 id="goal"></h2>
+    <table id="steps">
+      <thead><tr><th>Шаг</th><th>Состояние</th><th>Тип</th><th>Попытки</th><th>Ошибка</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <aside id="inspector"><p>клик по шагу — детали</p></aside>
+</main>
+<script src="/ui/order.js"></script>
+</body>
+</html>

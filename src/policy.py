@@ -22,7 +22,13 @@ UNKNOWN_TOKENS_PER_CALL = 200_000
 # Параллельность
 MAX_PARALLEL_EXECUTORS = 2
 
-# Allowlist репозиториев для MCP create_order (P0/P1)
+# Allowlist: ночная автономия (17.11) — открыты ВСЕ проекты /matrix,
+# кроме личных и секретных. Опасные действия всё равно только через владельца.
+ALLOW_ALL_MATRIX = True
+EXCLUDED_REPOS = {
+    "/matrix/secrets", "/matrix/vault", "/matrix/backups",
+    "/matrix/mama-site", "/matrix/korobkovy",
+}
 ALLOWED_REPOS = [
     "/matrix/bench-pilot/repo",
     "/matrix/dirigent",   # сам Дирижёр: worktree-изоляция, мердж только в dirigent/integrate
@@ -35,7 +41,13 @@ DANGEROUS_VIA_TELEGRAM_ONLY = [
 
 
 def repo_allowed(repo: str | None) -> bool:
-    return repo is None or repo in ALLOWED_REPOS
+    if repo is None:
+        return True
+    if repo in EXCLUDED_REPOS:
+        return False
+    if ALLOW_ALL_MATRIX and repo.startswith("/matrix/"):
+        return True
+    return repo in ALLOWED_REPOS
 
 
 def order_budget_ok(budget: float | None) -> bool:

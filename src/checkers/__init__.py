@@ -78,28 +78,63 @@ CHECKERS = {
 
 
 def check_pytest(workdir: str) -> CheckResult:
-    """Тесты проекта Python: .venv/bin/python -m pytest -q (если есть pytest.ini/setup.py)."""
+    """Тесты проекта Python. Интерпретатор: .venv в worktree или в родителях
+    (worktrees Дирижёра лежат в <repo>/worktrees/<x> — venv у родителя)."""
     import shutil
     if not (Path(workdir) / "pytest.ini").exists() and not (Path(workdir) / "setup.py").exists() \
             and not (Path(workdir) / "pyproject.toml").exists():
         return CheckResult(False, "pytest.ini/pyproject не найден — чекер pytest не для этого репо")
-    py = str(Path(workdir) / ".venv" / "bin" / "python")
-    if not Path(py).exists():
+    py = None
+    root = Path(workdir).resolve()
+    for cand in [root, *root.parents[:4]]:
+        v = cand / ".venv" / "bin" / "python"
+        if v.exists():
+            py = str(v)
+            break
+    if py is None:
         py = shutil.which("python3") or "python3"
-    p = subprocess.run([py, "-m", "pytest", "-q"], cwd=workdir,
+    r = subprocess.run([py, "-m", "pytest", "-q"], cwd=workdir,
                        capture_output=True, text=True, timeout=1200)
-    tail = "\n".join((p.stdout + p.stderr).splitlines()[-10:])
-    return CheckResult(p.returncode == 0, tail)
+    tail = "\n".join((r.stdout + r.stderr).splitlines()[-10:])
+    return CheckResult(r.returncode == 0, tail)
 
 
 def check_repo_changed(workdir: str) -> CheckResult:
-    """Coding-шаг обязан что-то изменить: «модель сказала готово» без правок — провал."""
+    """Coding-шаг обязан что-то изменить: «модель сказала готово» без результата — провал.
+
+    Учитывает ОБА случая: незакоммиченные правки И коммиты агента поверх базы
+    (иначе false negative: агент закоммитил -> дерево чистое -> ложный провал).
+    """
     p = subprocess.run(["git", "-C", workdir, "status", "--porcelain"],
                        capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         return CheckResult(False, "git status недоступен (не репо?)")
-    lines = [l for l in p.stdout.splitlines() if l.strip()]
-    return CheckResult(bool(lines), f"изменений: {len(lines)}" if lines else "рабочее дерево чистое")
+    dirty = [l for l in p.stdout.splitlines() if l.strip()]
+    ahead = 0
+    for base in ("dirigent/integrate", "dev", "main"):
+        r = subprocess.run(["git", "-C", workdir, "rev-list", "--count",
+                            f"{base}..HEAD"],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            try:
+                ahead = int(r.stdout.strip())
+                break
+            except ValueError:
+                continue
+    if dirty or ahead > 0:
+        return CheckResult(True, f"изменений: {len(dirty)} dirty, {ahead} commits")
+    return CheckResult(False, "рабочее дерево чистое и коммитов нет")
+
+
+def check_files_exist(workdir: str, expect: list[str]) -> CheckResult:
+    """Ожидаемые файлы созданы и непустые — против «успеха» без результата."""
+    missing = []
+    for rel in expect:
+        p = Path(workdir) / rel
+        if not p.exists() or p.stat().st_size == 0:
+            missing.append(rel)
+    return CheckResult(not missing,
+                       f"нет файлов: {missing}" if missing else f"файлов ок: {len(expect)}")
 
 
 def run_acceptance(step: StepSpec, workdir: str | None,
@@ -117,6 +152,11 @@ def run_acceptance(step: StepSpec, workdir: str | None,
             if not workdir:
                 return CheckResult(False, "repo_changed: нет workdir")
             r = check_repo_changed(workdir)
+        elif name == "files_exist":
+            expect = step.acceptance.get("expect_files", [])
+            if not expect:
+                return CheckResult(False, "files_exist: нет acceptance.expect_files")
+            r = check_files_exist(workdir or ".", expect)
         elif name == "diff_apply":
             diff = step.inputs.get("diff", "")
             if not diff:
