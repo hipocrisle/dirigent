@@ -17,7 +17,7 @@ vhost'ы получают дефолтный сервер `de-stub` (`/matrix/ma
 `http://127.0.0.1:9310/ui/` (loopback-only, AD-6). SPA от ChatGPT: список
 заказов, SVG-DAG, инспектор; SSE `/api/v1/events`. Проверено: 200, стримит.
 
-## 3. План безопасного ввода dirigent.hipogas.org (ожидает утверждения)
+## 3. ВВЕДЕНО В ЭКСПЛУАТАЦИЮ 17.11 ~11:50 (Kimi, go владельца «так делай»)
 
 Файл vhost'а на ХОСТЕ (не в контейнере): `/matrix/matrix-server/nginx/conf.d/dirigent.conf`:
 - `server 443 ssl` для dirigent.hipogas.org; сертификат — из уже примонтированного
@@ -86,3 +86,12 @@ dirigent_call-диспетчер: 17 инструментов + help.
 3) Проверка: https://dirigent.hipogas.org → 401 без пароля; с паролем — дашборд;
    SSE обновляет; мобильный вид.
 4) Откат в один шаг (п.3 удаление файла + reload).
+
+
+## As-built (факт)
+- Блок добавлен в КОНЕЦ de-stub.conf (маркеры === DIRIGENT ===; откат = удалить блок).
+- Сертификат LE выпущен в /matrix/matrix-server/letsencrypt (config-dir тот же, renewal штатный).
+- htpasswd: /matrix/matrix-server/letsencrypt/dirigent.htpasswd (0644, user `dirigent`, пароль у владельца в TG).
+- ufw: allow from 172.17.0.0/16 to 9310 (аналог правила ComfyUI); внешний доступ закрыт default-deny + basic-auth на nginx.
+- dirigent-api перебинден на 0.0.0.0:9310 (loopback+docker0; внешне недоступен: ufw).
+- Проверено: 401 без пароля; /ui/, /orders, /api/v1/events (SSE) — 200 с паролем; сертификат CN=dirigent.hipogas.org.
