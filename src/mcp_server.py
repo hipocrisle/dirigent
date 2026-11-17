@@ -413,7 +413,10 @@ async def create_test_order(goal: str, request_id: str) -> dict:
 @server.tool()
 async def get_budget() -> dict:
     """Деньги: фактический баланс/расход DeepSeek, лимиты, codex честно unknown."""
-    from . import budget
+    try:
+        from . import budget
+    except ImportError:  # script-mode (systemd): sibling import
+        import budget
     return _with_notices(budget.report())
 
 
